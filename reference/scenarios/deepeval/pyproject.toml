@@ -4,7 +4,7 @@ version = "0.0.0"
 requires-python = ">=3.12"
 dependencies = [
     "deepeval==2.9.7",
-    "langchain==0.3.28",
+    "langchain==1.2.15",
     "openai==2.32.0",
     "genai-reference-shared",
 ]
