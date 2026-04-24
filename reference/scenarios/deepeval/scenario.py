@@ -13,7 +13,7 @@ _reference_tracer = reference_tracer()
 def run_evaluation():
     """Scenario: evaluation result event via DeepEval GEval."""
     from deepeval.metrics import GEval
-    from deepeval.models.gpt_model import GPTModel
+    from deepeval.models import GPTModel
     from deepeval.test_case import LLMTestCase, LLMTestCaseParams
 
     print("  [evaluate] DeepEval relevance evaluation event")
