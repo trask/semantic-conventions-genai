@@ -3,9 +3,9 @@ name = "deepeval-reference-test"
 version = "0.0.0"
 requires-python = ">=3.12"
 dependencies = [
-    "deepeval==2.5.7",
-    "langchain==0.3.27",
-    "openai==2.31.0",
+    "deepeval==2.9.7",
+    "langchain==0.3.28",
+    "openai==2.32.0",
     "genai-reference-shared",
 ]
 
