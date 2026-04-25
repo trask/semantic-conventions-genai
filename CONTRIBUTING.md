@@ -2,51 +2,51 @@
 
 Welcome to the OpenTelemetry GenAI Semantic Conventions repository!
 
-Before you start — see the OpenTelemetry general
-[contributing](https://github.com/open-telemetry/community/blob/main/guides/contributor/README.md)
-requirements and recommendations.
+New to OpenTelemetry? Read the
+[New Contributor Guide](https://github.com/open-telemetry/community/blob/main/guides/contributor/README.md)
+first — it covers the CLA, Code of Conduct, and other prerequisites.
 
 ## Prerequisites
 
-You need [Docker](https://docs.docker.com/get-docker/) (or a compatible
-runtime such as Podman aliased as `docker`). The Makefile pins and runs
-Weaver via the `otel/weaver` container image.
+- [Docker](https://docs.docker.com/get-docker/) (or a compatible runtime
+  such as Podman aliased as `docker`) — `make` runs Weaver via the
+  `otel/weaver` container image.
+- [GNU Make](https://www.gnu.org/software/make/) — pre-installed on macOS
+  and Linux. On Windows, use [WSL](https://learn.microsoft.com/windows/wsl/install)
+  or install via [Chocolatey](https://chocolatey.org/) (`choco install make`)
+  or [Scoop](https://scoop.sh/) (`scoop install make`).
 
-## 1. Modify the YAML model
-
-Refer to the
-[Semantic Convention YAML Language](https://github.com/open-telemetry/weaver/blob/main/schemas/semconv-syntax.md)
-to learn how to make changes to the YAML files.
-
-### Code structure
+## Code structure
 
 ```
 ├── docs
-│   ├── gen-ai/            # hand-written docs (spans, metrics, events)
-│   │   └── mcp.md         # hand-written MCP doc
+│   ├── gen-ai/            # hand-written docs with embedded generated tables
 │   └── registry/          # auto-generated attribute registry pages
 ├── model
-│   ├── manifest.yaml      # dependency on core semantic conventions
-│   ├── gen-ai/
-│   │   ├── registry.yaml  # attribute definitions
-│   │   ├── spans.yaml     # span conventions
-│   │   ├── metrics.yaml   # metric conventions
-│   │   ├── events.yaml    # event conventions
-│   │   └── deprecated/    # deprecated conventions
-│   ├── mcp/
-│   └── openai/
+│   └── <namespace>/       # e.g. gen-ai, mcp, openai
+│       ├── registry.yaml  # attribute definitions
+│       ├── spans.yaml     # span conventions
+│       ├── metrics.yaml   # metric conventions
+│       ├── events.yaml    # event conventions
+│       └── deprecated/    # deprecated conventions
 ```
 
 All attributes must be defined in `registry.yaml` files under the matching
 namespace folder in `model/`.
 
-### Stability level
+## Making a change
 
-Every new group and attribute must declare a `stability:` level. New
+### 1. Modify the YAML model
+
+Refer to the
+[Semantic Convention YAML Language](https://github.com/open-telemetry/weaver/blob/main/schemas/semconv-syntax.md)
+to learn about the YAML file syntax.
+
+Every group and attribute must declare a `stability:` level. New
 proposals should start at `development`. Promotion to `release_candidate`
 or `stable` should be a separate PR.
 
-## 2. Regenerate the docs
+### 2. Regenerate the docs
 
 After updating the YAML, run:
 
@@ -55,44 +55,45 @@ make generate-docs
 ```
 
 This regenerates the attribute registry pages under `docs/registry/` and
-refreshes the generated tables embedded in the hand-written docs
-under `docs/gen-ai/`.
+refreshes the generated tables embedded in the hand-written docs (e.g.
+`docs/gen-ai/gen-ai-spans.md`).
 
-## 3. Validate
+### 3. Validate
 
-Run the full validation suite:
+Run the shared policy checks:
 
 ```bash
-make check
+make check-policies
 ```
 
-This validates the model against shared policies from
-[opentelemetry-weaver-packages](https://github.com/open-telemetry/opentelemetry-weaver-packages).
+This validates the model against shared OpenTelemetry policies covering
+naming conventions, attribute type rules, stability requirements, and
+backwards-compatibility.
 
-## 4. Update reference scenarios
+### 4. Update reference scenarios
 
-Changes under `model/` or `docs/` typically require updating the runnable
-reference scenarios under `reference/`. Ideally at least two real
-libraries should demonstrate the new convention end-to-end. See
+Changes under `model/` or `docs/` typically require updating the
+reference scenarios under `reference/` in order to demonstrate
+the capturability of the proposed updates. See
 [reference/CONTRIBUTING.md](reference/CONTRIBUTING.md).
 
-## 5. Update the changelog
+### 5. Update the changelog
 
 Add an entry under `Unreleased` in [CHANGELOG.md](CHANGELOG.md) for any
 change a consumer of these conventions would need to notice. Editorial
 changes (typos, rewording, non-normative clarifications) don't need an
 entry.
 
-## Keep PRs small
-
-Small, focused PRs are much easier to review, and therefore much more
-likely to land quickly. Even when changes are related, prefer phasing
-them across multiple narrow PRs over one large change.
-
-## Opening the PR
+### 6. Open the PR
 
 The [pull request template](.github/PULL_REQUEST_TEMPLATE.md) asks for
 user journey, prior art, and a prototype — reviewers will look for these.
+
+## Keep PRs small
+
+Small, focused PRs are much easier to review, and therefore much more
+likely to land quickly. Consider phasing larger changes across multiple PRs
+where possible.
 
 ## Driving a PR forward
 

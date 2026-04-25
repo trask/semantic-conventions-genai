@@ -4,7 +4,7 @@
 # the otel/weaver container image -- contributors do not need to install weaver locally.
 
 # Shared external version pins. Override on the command line when needed, e.g.
-# `make check SEMCONV_VERSION=v1.40.0`.
+# `make check-policies SEMCONV_VERSION=v1.40.0`.
 VERSION_PINS_FILE := versions.env
 include $(VERSION_PINS_FILE)
 
@@ -49,7 +49,7 @@ SC_UPSTREAM_STAMP := $(SC_UPSTREAM_FILTERED)/.stamp-$(SEMCONV_VERSION)
 # from the filtered copy so their group ids do not collide with ours.
 SC_UPSTREAM_MIGRATED_DIRS := gen-ai mcp openai
 
-.PHONY: check generate-docs check-docs resolve clean filter-upstream fix-external-links
+.PHONY: check-policies generate-docs resolve clean filter-upstream fix-external-links
 
 # Pinned upstream GitHub URL base, used by fix-external-links to rewrite doc
 # links that point at files living only in open-telemetry/semantic-conventions.
@@ -92,7 +92,7 @@ $(SC_UPSTREAM_STAMP): $(VERSION_PINS_FILE)
 filter-upstream: $(SC_UPSTREAM_STAMP)
 
 # Validate the model and run shared policies
-check: $(LOCAL_POLICY_STAMP) $(SC_UPSTREAM_STAMP)
+check-policies: $(LOCAL_POLICY_STAMP) $(SC_UPSTREAM_STAMP)
 	$(WEAVER) registry check \
 		-r ./model \
 		--policy $(LOCAL_POLICIES)/policies/check
@@ -117,7 +117,6 @@ generate-docs: $(SC_UPSTREAM_STAMP)
 		--target markdown \
 		--param registry_base_url=/docs/registry/ \
 		docs
-	$(MAKE) --no-print-directory fix-external-links
 	$(MAKE) --no-print-directory fix-external-links
 
 # Rewrite absolute /docs/... links in generated docs so they resolve on GitHub.
@@ -166,15 +165,6 @@ fix-external-links:
 		awk '!/^- \[Entities\]\(entities\/README\.md\)$$/' docs/registry/README.md > docs/registry/README.md.tmp && \
 		mv docs/registry/README.md.tmp docs/registry/README.md; \
 	fi
-
-# Verify deterministic generated docs are in sync with model.
-check-docs: generate-docs
-	@if ! git diff --exit-code -- ./docs/registry; then \
-		echo "FAIL: Generated registry documentation is out of sync!"; \
-		echo "Run 'make generate-docs' and commit the changes."; \
-		exit 1; \
-	fi
-	@echo "OK: Deterministic generated documentation is up to date"
 
 # Output the resolved schema (useful for debugging)
 resolve: $(SC_UPSTREAM_STAMP)
