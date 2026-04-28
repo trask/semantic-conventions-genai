@@ -37,7 +37,9 @@ rarely invoked, so caching adds complexity for no real win.
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -52,6 +54,15 @@ NAMESPACES = ("gen-ai", "mcp", "openai")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MODEL_DIR = REPO_ROOT / "model"
+
+# Weaver build cache populated by the Makefile. Its `sc-upstream-filtered/`
+# subtree is stamped only by `SEMCONV_VERSION`, so a previous partial build at
+# the same pin gets reused even when upstream added shared attributes that the
+# freshly re-imported model now references (observed: `aws.bedrock.*`). Wipe
+# it on every re-import so the next `make check-policies` rebuilds from a
+# clean upstream clone. This script is rarely invoked; the rebuild cost is
+# irrelevant.
+BUILD_DIR = REPO_ROOT / ".build"
 
 
 def _run(cmd: list[str], *, cwd: Path | None = None) -> None:
@@ -104,6 +115,17 @@ def main(argv: list[str] | None = None) -> int:
         _clone_upstream(clone_dir, args.ref)
         for ns in NAMESPACES:
             _import_namespace(clone_dir, ns)
+
+    if BUILD_DIR.exists():
+        # Git packs inside `.build/sc-upstream-*/.git/` are read-only on
+        # Windows, which makes `shutil.rmtree` raise PermissionError. Force
+        # writable on each failed unlink and retry.
+        def _force_writable(func, path, _exc):
+            os.chmod(path, stat.S_IWRITE)
+            func(path)
+
+        shutil.rmtree(BUILD_DIR, onerror=_force_writable)
+        print(f"cleared {BUILD_DIR.relative_to(REPO_ROOT)}/", file=sys.stderr)
 
     return 0
 
