@@ -53,6 +53,7 @@ jobs:
       - name: Generate matrices
         id: matrices
         run: echo "matrix=$(uv run run-scenario --print-ci-matrix)" >> "$GITHUB_OUTPUT"
+
   # ── Scenario Tests ──────────────────────────────────────
   scenarios:
     runs-on: ubuntu-latest
@@ -99,3 +100,15 @@ jobs:
 
       - name: Check status report is up to date
         run: git diff --exit-code -- README.md reports/
+
+  # ── Aggregate gate for branch protection ───────────────────────────
+  required-status-check:
+    if: always()
+    needs: [lint, discover-scenarios, scenarios, status-report]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fail if any dependency failed or was cancelled
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped')
+        run: |
+          exit 1
