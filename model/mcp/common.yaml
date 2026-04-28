@@ -1,7 +1,9 @@
-groups:
+file_format: definition/2
+attribute_groups:
   - id: mcp.common.attributes
-    type: attribute_group
+    visibility: public
     brief: Common MCP attributes
+    stability: development
     attributes:
       - ref: gen_ai.tool.name
         requirement_level:

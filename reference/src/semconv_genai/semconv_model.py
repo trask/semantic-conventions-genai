@@ -23,10 +23,25 @@ _MODEL_DIR = MODEL_ROOT / "gen-ai"
 
 
 def _load_groups() -> dict[str, dict]:
+    """Load all source files under ``model/gen-ai/`` and return a unified
+    lookup keyed by a synthetic id covering attribute groups, spans, and
+    events.
+
+    Spans are keyed by ``type:`` and events by ``name:``; we prepend
+    ``span.`` / ``event.`` here so callers can address them with stable
+    ids like ``span.gen_ai.inference.client``."""
     groups: dict[str, dict] = {}
     for path in sorted(_MODEL_DIR.glob("*.yaml")):
-        for group in yaml.safe_load(path.read_text("utf-8")).get("groups", []):
-            groups[group["id"]] = group
+        doc = yaml.safe_load(path.read_text("utf-8")) or {}
+        for ag in doc.get("attribute_groups", []) or []:
+            if "id" in ag:
+                groups[ag["id"]] = ag
+        for span in doc.get("spans", []) or []:
+            if "type" in span:
+                groups[f"span.{span['type']}"] = span
+        for event in doc.get("events", []) or []:
+            if "name" in event:
+                groups[f"event.{event['name']}"] = event
     return groups
 
 
@@ -39,15 +54,25 @@ def _requirement_level_key(raw: object) -> str:
 
 
 def _resolve_attrs(groups: dict[str, dict], group_id: str) -> dict[str, str]:
+    """Resolve the merged ref->requirement_level map for a group.
+
+    Inheritance is expressed inline via ``- ref_group: <id>`` entries that
+    may appear anywhere in the ``attributes:`` list. Later entries override
+    earlier ones, mirroring Weaver's resolution order."""
     group = groups.get(group_id)
     if not group:
         return {}
-    attrs = _resolve_attrs(groups, group["extends"]) if group.get("extends") else {}
-    for attr in group.get("attributes", []):
-        ref = attr.get("ref")
+    attrs: dict[str, str] = {}
+    for entry in group.get("attributes", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        if "ref_group" in entry:
+            attrs.update(_resolve_attrs(groups, entry["ref_group"]))
+            continue
+        ref = entry.get("ref")
         if not ref:
             continue
-        level = attr.get("requirement_level")
+        level = entry.get("requirement_level")
         if level is not None:
             attrs[ref] = _requirement_level_key(level)
     return attrs
