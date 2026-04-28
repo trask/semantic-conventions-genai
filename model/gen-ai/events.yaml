@@ -1,24 +1,21 @@
-groups:
-  - id: event.gen_ai.client.inference.operation.details
-    name: gen_ai.client.inference.operation.details
-    type: event
-    stability: development
+file_format: definition/2
+events:
+  - name: gen_ai.client.inference.operation.details
     brief: >
       Describes the details of a GenAI completion request including chat history
       and parameters.
     note: >
       This event is opt-in and could be used to store input and output details
       independently from traces.
-    extends: attributes.gen_ai.inference.client
-
-  - id: event.gen_ai.evaluation.result
-    name: gen_ai.evaluation.result
-    type: event
     stability: development
+    attributes:
+      - ref_group: attributes.gen_ai.inference.client
+  - name: gen_ai.evaluation.result
     brief: >
       This event captures the result of evaluating GenAI output for quality, accuracy, or other characteristics.
       This event SHOULD be parented to GenAI operation span being evaluated when possible
       or set `gen_ai.response.id` when span id is not available.
+    stability: development
     attributes:
       - ref: gen_ai.evaluation.name
         requirement_level: required
@@ -45,10 +42,7 @@ groups:
           the canonical name of exception that occurred, or another low-cardinality error identifier.
           Instrumentations SHOULD document the list of errors they report.
 
-  - id: event.gen_ai.client.operation.exception
-    name: gen_ai.client.operation.exception
-    stability: development
-    type: event
+  - name: gen_ai.client.operation.exception
     brief: >
       This event represents an exception that occurred during a Generative AI client operation,
       such as API errors, rate limiting, model errors, timeouts, or other errors that prevent
@@ -60,6 +54,7 @@ groups:
 
       Instrumentations MAY provide a configuration option to populate exception events
       with the attributes captured on the corresponding Generative AI client span.
+    stability: development
     attributes:
       - ref: exception.type
         requirement_level:

@@ -31,8 +31,6 @@ All registered attributes are listed by namespace in this registry.
 
 Currently, the following namespaces exist:
 
-- [Gen AI](gen-ai.md)
-- [MCP](mcp.md)
-- [OpenAI](openai.md)
+- [Model](model.md)
 
 [developers recommendations]: ../../general/naming.md#recommendations-for-application-developers

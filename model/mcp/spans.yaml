@@ -1,9 +1,11 @@
-groups:
+file_format: definition/2
+attribute_groups:
   - id: trace.mcp.common.attributes
-    type: attribute_group
-    extends: mcp.common.attributes
+    visibility: public
     brief: MCP common span attributes
+    stability: development
     attributes:
+      - ref_group: mcp.common.attributes
       - ref: mcp.session.id
         requirement_level:
           recommended: When the MCP request or notification is part of a session.
@@ -14,9 +16,11 @@ groups:
         requirement_level:
           conditionally_required: When the client executes a request.
 
-  - id: span.mcp.client
-    type: span
-    span_kind: client
+spans:
+  - type: mcp.client
+    kind: client
+    name:
+      note: This span describes the MCP call from the client side.
     brief: This span describes the MCP call from the client side.
     note: |
       It's reported by the MCP client when it initiates the request
@@ -47,8 +51,8 @@ groups:
       Instrumentations that support this behavior MAY provide a configuration
       option to enable it.
     stability: development
-    extends: trace.mcp.common.attributes
     attributes:
+      - ref_group: trace.mcp.common.attributes
       - ref: server.address
         requirement_level:
           recommended: If applicable
@@ -60,11 +64,11 @@ groups:
       - ref: gen_ai.tool.call.result
         requirement_level: opt_in
 
-  - id: span.mcp.server
-    type: span
-    span_kind: server
-    brief: This span describes the processing of the MCP request or notification
-      initiated by the peer.
+  - type: mcp.server
+    kind: server
+    name:
+      note: This span describes the processing of the MCP request or notification initiated by the peer.
+    brief: This span describes the processing of the MCP request or notification initiated by the peer.
     note: |
       It's reported by the MCP server when client initiates the request
       (or notification) or by the MCP client when server initiates the operation.
@@ -84,8 +88,8 @@ groups:
       Refer to the [Recording Errors](/docs/general/recording-errors.md) document
       for more details.
     stability: development
-    extends: trace.mcp.common.attributes
     attributes:
+      - ref_group: trace.mcp.common.attributes
       - ref: client.address
         requirement_level:
           recommended: If applicable

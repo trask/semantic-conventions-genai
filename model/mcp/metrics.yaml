@@ -1,15 +1,18 @@
-groups:
+file_format: definition/2
+attribute_groups:
   - id: mcp.operation.metrics.attributes
-    type: attribute_group
+    visibility: public
     brief: MCP request metrics attributes
-    extends: mcp.common.attributes
+    stability: development
     attributes:
+      - ref_group: mcp.common.attributes
       - ref: mcp.resource.uri
         requirement_level: opt_in
 
   - id: mcp.session.metrics.attributes
-    type: attribute_group
+    visibility: public
     brief: MCP session metrics attributes
+    stability: development
     attributes:
       - ref: mcp.protocol.version
       - ref: network.protocol.name
@@ -35,17 +38,16 @@ groups:
         requirement_level:
           conditionally_required: If and only if session ends with an error.
 
-  - id: metric.mcp.client.operation.duration
-    type: metric
-    metric_name: mcp.client.operation.duration
+metrics:
+  - name: mcp.client.operation.duration
+    instrument: histogram
+    unit: s
     brief: >
       The duration of the MCP request or notification as observed on the sender
       from the time it was sent until the response or ack is received.
-    unit: s
-    instrument: histogram
     stability: development
-    extends: mcp.operation.metrics.attributes
     attributes:
+      - ref_group: mcp.operation.metrics.attributes
       - ref: server.address
         requirement_level:
           recommended: If applicable
@@ -53,26 +55,22 @@ groups:
         requirement_level:
           recommended: When `server.address` is set
 
-  - id: metric.mcp.server.operation.duration
-    type: metric
-    metric_name: mcp.server.operation.duration
+  - name: mcp.server.operation.duration
+    instrument: histogram
+    unit: s
     brief: >
       MCP request or notification duration as observed on the receiver
       from the time it was received until the result or ack is sent.
-    unit: s
-    instrument: histogram
     stability: development
-    extends: mcp.operation.metrics.attributes
-
-  - id: metric.mcp.client.session.duration
-    type: metric
-    metric_name: mcp.client.session.duration
-    brief: The duration of the MCP session as observed on the MCP client.
-    unit: s
-    instrument: histogram
-    stability: development
-    extends: mcp.session.metrics.attributes
     attributes:
+      - ref_group: mcp.operation.metrics.attributes
+  - name: mcp.client.session.duration
+    instrument: histogram
+    unit: s
+    brief: The duration of the MCP session as observed on the MCP client.
+    stability: development
+    attributes:
+      - ref_group: mcp.session.metrics.attributes
       - ref: server.address
         requirement_level:
           recommended: If applicable
@@ -80,11 +78,10 @@ groups:
         requirement_level:
           recommended: When `server.address` is set
 
-  - id: metric.mcp.server.session.duration
-    type: metric
-    metric_name: mcp.server.session.duration
-    brief: The duration of the MCP session as observed on the MCP server.
-    unit: s
+  - name: mcp.server.session.duration
     instrument: histogram
+    unit: s
+    brief: The duration of the MCP session as observed on the MCP server.
     stability: development
-    extends: mcp.session.metrics.attributes
+    attributes:
+      - ref_group: mcp.session.metrics.attributes
