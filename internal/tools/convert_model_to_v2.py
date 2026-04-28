@@ -164,13 +164,16 @@ def _convert_attr_refs(
     lifted: list,
     lifted_keys: set,
     *,
-    allow_sampling_relevant: bool,
+    strip_sampling_relevant: bool,
 ) -> list:
     """Walk a v1 `attributes:` list. Inline defs get lifted into `lifted` (top-level
     `attributes:`) and replaced with `- ref: <key>`. Refs pass through untouched.
 
-    `sampling_relevant` is a span-only field in v2. When `allow_sampling_relevant`
-    is False (attribute_groups, events, metrics) we strip it with a warning."""
+    v2 only allows `sampling_relevant` on refs inside a span. Inside an
+    `attribute_group` the field is rejected by Weaver's schema, so when
+    `strip_sampling_relevant` is True we silently drop it -- the caller is
+    responsible for re-attaching the flag on every span that consumes the
+    group via `extends:` / `ref_group:` (see `_inherited_sampling_refs`)."""
     out = CommentedSeq()
     for entry in attrs:
         if not isinstance(entry, dict):
@@ -188,12 +191,7 @@ def _convert_attr_refs(
             ref["ref"] = key
             out.append(ref)
         else:
-            if not allow_sampling_relevant and "sampling_relevant" in entry:
-                _warn(
-                    path,
-                    f"{owner_id}: dropping `sampling_relevant` on ref {entry.get('ref')!r}; "
-                    "v2 only models it on span attribute refs",
-                )
+            if strip_sampling_relevant and "sampling_relevant" in entry:
                 entry = {k: v for k, v in entry.items() if k != "sampling_relevant"}
             out.append(entry)
     return out
@@ -229,7 +227,7 @@ def _build_attributes_list(
     lifted: list,
     lifted_keys: set,
     *,
-    allow_sampling_relevant: bool,
+    strip_sampling_relevant: bool,
 ) -> CommentedSeq:
     """Build the v2 `attributes:` list for a signal/group, prepending
     `- ref_group: <extends>` when a v1 `extends:` is present. Returns an
@@ -249,7 +247,7 @@ def _build_attributes_list(
                 owner_id,
                 lifted,
                 lifted_keys,
-                allow_sampling_relevant=allow_sampling_relevant,
+                strip_sampling_relevant=strip_sampling_relevant,
             )
         )
     return out
@@ -272,7 +270,7 @@ def _convert_attribute_group(group: dict, path: Path, lifted: list, lifted_keys:
     extends = group.get("extends")
 
     converted_attrs = _build_attributes_list(
-        group, path, gid, lifted, lifted_keys, allow_sampling_relevant=False
+        group, path, gid, lifted, lifted_keys, strip_sampling_relevant=True
     )
 
     if not has_refs and not extends:
@@ -297,7 +295,7 @@ def _convert_attribute_group(group: dict, path: Path, lifted: list, lifted_keys:
     return out
 
 
-def _convert_span(group: dict, path: Path, lifted: list, lifted_keys: set) -> CommentedMap:
+def _convert_span(group: dict, path: Path, lifted: list, lifted_keys: set, sampling_inheritance: dict[str, list[str]]) -> CommentedMap:
     """v1 `type: span` -> v2 `Span`. v1 `id: span.foo` becomes v2 `type: foo`."""
     gid = group.get("id", "<no-id>")
     v2_type = gid.removeprefix("span.")
@@ -319,8 +317,29 @@ def _convert_span(group: dict, path: Path, lifted: list, lifted_keys: set) -> Co
     _copy_common(out, group)
 
     attrs = _build_attributes_list(
-        group, path, gid, lifted, lifted_keys, allow_sampling_relevant=True
+        group, path, gid, lifted, lifted_keys, strip_sampling_relevant=False
     )
+
+    # Re-attach sampling_relevant flags inherited via the `extends:` chain.
+    # v2 only accepts the flag on refs inside a span, so the attribute_group
+    # converter strips it on the way out -- we add it back here as ref
+    # overrides at the end of the span's attributes list.
+    extends = group.get("extends")
+    if extends:
+        already_set = {
+            e["ref"]
+            for e in attrs
+            if isinstance(e, dict) and "ref" in e and e.get("sampling_relevant")
+        }
+        for key in sampling_inheritance.get(extends, []):
+            if key in already_set:
+                continue
+            ref = CommentedMap()
+            ref["ref"] = key
+            ref["sampling_relevant"] = True
+            attrs.append(ref)
+            already_set.add(key)
+
     if attrs:
         out["attributes"] = attrs
 
@@ -336,7 +355,7 @@ def _convert_event(group: dict, path: Path, lifted: list, lifted_keys: set) -> C
     _copy_common(out, group)
 
     attrs = _build_attributes_list(
-        group, path, gid, lifted, lifted_keys, allow_sampling_relevant=False
+        group, path, gid, lifted, lifted_keys, strip_sampling_relevant=True
     )
     if attrs:
         out["attributes"] = attrs
@@ -360,13 +379,73 @@ def _convert_metric(group: dict, path: Path, lifted: list, lifted_keys: set) -> 
     _copy_common(out, group)
 
     attrs = _build_attributes_list(
-        group, path, gid, lifted, lifted_keys, allow_sampling_relevant=False
+        group, path, gid, lifted, lifted_keys, strip_sampling_relevant=True
     )
     if attrs:
         out["attributes"] = attrs
 
     _warn_unknown_fields(path, group, "metric", gid)
     return out
+
+
+def _build_sampling_inheritance(groups: list, path: Path) -> dict[str, list[str]]:
+    """Pre-scan v1 groups to compute, for each ``id``, the list of attribute
+    keys flagged ``sampling_relevant: true`` -- including ones inherited
+    transitively from an ``extends:`` parent in the same file.
+
+    v2 rejects ``sampling_relevant`` inside ``attribute_group`` refs, so the
+    flag has to be re-attached on every consuming span. This map is the
+    lookup that makes that re-attachment possible.
+
+    Cycles in `extends:` are guarded against; unresolved parents (e.g.
+    pointing at a group in a different file) are silently treated as
+    contributing no extra refs."""
+    direct: dict[str, list[str]] = {}
+    parents: dict[str, str] = {}
+    for g in groups:
+        if not isinstance(g, dict):
+            continue
+        gid = g.get("id")
+        if not gid:
+            continue
+        keys: list[str] = []
+        for entry in g.get("attributes", []) or []:
+            if (
+                isinstance(entry, dict)
+                and "ref" in entry
+                and entry.get("sampling_relevant") is True
+            ):
+                keys.append(entry["ref"])
+        direct[gid] = keys
+        if g.get("extends"):
+            parents[gid] = g["extends"]
+
+    resolved: dict[str, list[str]] = {}
+
+    def resolve(gid: str, stack: tuple[str, ...]) -> list[str]:
+        if gid in resolved:
+            return resolved[gid]
+        if gid in stack:
+            _warn(path, f"cycle in `extends:` chain at {gid!r}; ignoring rest of chain")
+            return []
+        out: list[str] = []
+        seen: set[str] = set()
+        parent = parents.get(gid)
+        if parent is not None:
+            for k in resolve(parent, stack + (gid,)):
+                if k not in seen:
+                    out.append(k)
+                    seen.add(k)
+        for k in direct.get(gid, []):
+            if k not in seen:
+                out.append(k)
+                seen.add(k)
+        resolved[gid] = out
+        return out
+
+    for gid in direct:
+        resolve(gid, ())
+    return resolved
 
 
 def convert_doc(doc: Any, path: Path) -> CommentedMap | None:
@@ -382,6 +461,8 @@ def convert_doc(doc: Any, path: Path) -> CommentedMap | None:
 
     new_doc = CommentedMap()
     new_doc["file_format"] = V2_FILE_FORMAT
+
+    sampling_inheritance = _build_sampling_inheritance(doc["groups"] or [], path)
 
     lifted_attrs: list = []
     lifted_keys: set = set()
@@ -402,7 +483,7 @@ def convert_doc(doc: Any, path: Path) -> CommentedMap | None:
             if ag is not None:
                 attribute_groups.append(ag)
         elif gtype == "span":
-            spans.append(_convert_span(group, path, lifted_attrs, lifted_keys))
+            spans.append(_convert_span(group, path, lifted_attrs, lifted_keys, sampling_inheritance))
         elif gtype == "event":
             events.append(_convert_event(group, path, lifted_attrs, lifted_keys))
         elif gtype == "metric":
