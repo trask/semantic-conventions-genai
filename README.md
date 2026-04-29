@@ -12,7 +12,7 @@ on the core semantic conventions.
 
 ## Schema URL
 
-<https://opentelemetry.io/schemas/gen-ai/0.1.0>
+<https://opentelemetry.io/schemas/gen-ai/1.42.0>
 
 ## Read the docs
 
