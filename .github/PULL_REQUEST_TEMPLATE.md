@@ -13,7 +13,14 @@ Include:
 
 - **User journey:** what user journey does this support? For example: incident triage, cost allocation, quality evaluation, sampling decisions, capacity planning, security investigation.
 - **Prior art:** where does this (or an equivalent) exist today outside of OpenTelemetry?
-- **Prototype:** the reference scenarios under `reference/scenarios/` should be updated to demonstrate this (they show end-to-end that the proposed convention can actually be produced from real libraries and consumed to answer the user journey). If that isn't possible, explain why and provide an alternate prototype (e.g. instrumentation, demo, or dashboard).
+-->
+
+## Prototype
+
+<!--
+Show end-to-end that the proposed convention can actually be produced from real libraries and consumed to answer the user journey.
+
+Update the reference scenarios under `reference/scenarios/` to demonstrate this. If that isn't possible, explain why and provide an alternate prototype (e.g. instrumentation, demo, or dashboard).
 -->
 
 ## Checklist
