@@ -1,0 +1,87 @@
+name: Release
+
+# Triggered by pushing a tag matching v<MAJOR>.<MINOR>.<PATCH>. Verifies the
+# tagged commit is internally consistent (schema_url and CHANGELOG agree
+# with the tag), then publishes a GitHub release whose body is the matching
+# changelog section.
+#
+# Run the prepare-release workflow first to produce the release-prep PR;
+# tag only after that PR merges to main.
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Resolve tag version
+        id: tag
+        run: |
+          set -euo pipefail
+          ref="${GITHUB_REF#refs/tags/}"
+          version="${ref#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Tag $ref is not vMAJOR.MINOR.PATCH"
+            exit 1
+          fi
+          echo "tag=$ref" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Verify schema_url matches tag
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          expected="schema_url: https://opentelemetry.io/schemas/gen-ai/${VERSION}"
+          if ! grep -Fxq "$expected" model/manifest.yaml; then
+            echo "::error::model/manifest.yaml schema_url does not match tag v${VERSION}."
+            echo "Expected line: $expected"
+            echo "Actual:"
+            grep '^schema_url:' model/manifest.yaml || true
+            exit 1
+          fi
+
+      - name: Extract changelog section
+        id: changelog
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Pull lines from `## v<VERSION> (...)` (exclusive of heading)
+          # up to the next `## ` heading or EOF.
+          awk -v ver="$VERSION" '
+            $0 ~ "^## v" ver " " { found=1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          if [[ ! -s release-notes.md ]]; then
+            echo "::error::No '## v${VERSION} (...)' section found in CHANGELOG.md"
+            exit 1
+          fi
+          # Trim leading/trailing blank lines.
+          awk 'NF{p=1} p' release-notes.md \
+            | tac | awk 'NF{p=1} p' | tac > release-notes.trimmed.md
+          mv release-notes.trimmed.md release-notes.md
+          echo "Extracted release notes:"
+          cat release-notes.md
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" \
+            --title "v${VERSION}" \
+            --notes-file release-notes.md \
+            --verify-tag
