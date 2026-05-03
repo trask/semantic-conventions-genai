@@ -23,9 +23,11 @@ WEAVER := docker run --rm \
 	-e HOME=/tmp \
 	$(WEAVER_IMAGE)
 
-# Local cache of policies fetched from upstream (gitignored)
-LOCAL_POLICIES := .build/weaver-policies
-LOCAL_POLICY_STAMP := $(LOCAL_POLICIES)/.$(POLICY_REPO_REF)
+# Shared policy pack from open-telemetry/opentelemetry-weaver-packages. We
+# track `main` rather than pinning a SHA because Weaver panics in
+# `registry check` when fetching a remote policy pack by commit (reproduced
+# on 0.23.0). Switch back to a pinned ref once that is fixed upstream.
+WEAVER_POLICY_PACK := https://github.com/open-telemetry/opentelemetry-weaver-packages.git
 
 # Filtered copy of the upstream semantic-conventions model. We clone the
 # pinned upstream registry and delete the subdirectories that have been
@@ -57,7 +59,7 @@ SC_UPSTREAM_MIGRATED_DIRS := gen-ai mcp openai
 # `internal/tools/overwrite_model_from_upstream.py`.
 SC_UPSTREAM_MIGRATED_GROUPS := aws/registry.yaml:registry.aws.bedrock
 
-.PHONY: check-policies generate-docs resolve clean filter-upstream fix-external-links
+.PHONY: check-policies schema-snapshot generate-docs package regenerate clean filter-upstream fix-external-links
 
 # Pinned upstream GitHub URL base, used by fix-external-links to rewrite doc
 # links that point at files living only in open-telemetry/semantic-conventions.
@@ -71,18 +73,6 @@ UPSTREAM_DOCS_BASE := https://github.com/open-telemetry/semantic-conventions/blo
 # (gen-ai, mcp, openai, aws via aws-bedrock) are listed as files under
 # docs/attributes/ and stay relative.
 UPSTREAM_ATTR_NAMESPACES := azure client error exception jsonrpc network rpc server
-
-# Work around a Weaver 0.22.1 panic when `registry check` fetches a pinned remote
-# policy pack by commit SHA. Keep the policy source pinned, but materialize it as
-# a local checkout before running validation.
-$(LOCAL_POLICY_STAMP): $(VERSION_PINS_FILE)
-	@mkdir -p .build
-	rm -rf $(LOCAL_POLICIES)
-	git init -q $(LOCAL_POLICIES)
-	cd $(LOCAL_POLICIES) && git remote add origin $(POLICY_REPO_URL)
-	cd $(LOCAL_POLICIES) && git fetch --depth 1 origin $(POLICY_REPO_REF)
-	cd $(LOCAL_POLICIES) && git checkout --detach FETCH_HEAD
-	touch $(LOCAL_POLICY_STAMP)
 
 # Clone upstream semantic-conventions at the pinned version and drop the
 # subdirectories that have been migrated into this repo. See the long
@@ -114,11 +104,16 @@ $(SC_UPSTREAM_STAMP): $(VERSION_PINS_FILE)
 
 filter-upstream: $(SC_UPSTREAM_STAMP)
 
-# Validate the model and run shared policies
-check-policies: $(LOCAL_POLICY_STAMP) $(SC_UPSTREAM_STAMP)
+# Validate the model and run shared policies. Each `--policy` selects one
+# subdirectory of the weaver-packages repo via Weaver's `<url>[<subpath>]`
+# fetch syntax, so we never materialize a local copy.
+check-policies: $(SC_UPSTREAM_STAMP)
 	$(WEAVER) registry check \
 		-r ./model \
-		--policy $(LOCAL_POLICIES)/policies/check
+		--v2 \
+		--policy '$(WEAVER_POLICY_PACK)[policies/check/naming_conventions]' \
+		--policy '$(WEAVER_POLICY_PACK)[policies/check/backwards-compatibility]' \
+		--policy '$(WEAVER_POLICY_PACK)[policies/check/stability]'
 
 # Regenerate everything Weaver owns under docs/:
 #   1. The attribute registry pages under docs/registry/ (full directory of
@@ -189,12 +184,33 @@ fix-external-links:
 		mv docs/registry/README.md.tmp docs/registry/README.md; \
 	fi
 
-# Output the resolved schema (useful for debugging)
-resolve: $(SC_UPSTREAM_STAMP)
-	$(WEAVER) registry generate \
+# Output the resolved schema for local debugging. Writes to ./resolved (gitignored).
+# For the committed snapshot used by reviewers and downstream consumers, run
+# `make schema-snapshot` instead -- that target writes to ./schema-snapshot and is checked in.
+package: $(SC_UPSTREAM_STAMP)
+	$(WEAVER) registry package \
 		-r ./model \
 		--skip-policies \
-		-f yaml
+		--v2 \
+		--resolved-schema-uri https://todo/v1.42.0-dev/resolved.yaml \
+		-o ./resolved
+
+# Run every weaver-driven regeneration the repo owns: build the resolved
+# schema (./resolved, gitignored), refresh the committed schema snapshot
+# (./schema-snapshot), and rebuild docs under ./docs. CI runs this and
+# fails if any committed output is out of sync.
+regenerate: package schema-snapshot generate-docs
+
+# Render the resolved registry as a single YAML file under ./schema-snapshot.
+# The output is committed; CI runs `make schema-snapshot` and fails if the working
+# tree differs, so reviewers can see schema-level changes in PR diffs.
+schema-snapshot: $(SC_UPSTREAM_STAMP)
+	$(WEAVER) registry generate \
+		-r ./model \
+		--v2 \
+		-t ./internal/templates \
+		yaml \
+		./schema-snapshot
 
 # Remove generated docs, the local .build/ tree (Weaver-fetched templates/policies
 # plus any hand-created weaver-min-repro* dirs), reference-project caches, and
@@ -205,6 +221,7 @@ resolve: $(SC_UPSTREAM_STAMP)
 # (`rm -rf reference/.venv`) for a full reset.
 clean:
 	rm -rf docs/registry
+	rm -rf resolved
 	rm -rf .build
 	rm -rf reference/.cache
 	find . -type d -name __pycache__ -prune -exec rm -rf {} +

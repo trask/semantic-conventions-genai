@@ -27,7 +27,7 @@ jobs:
       - name: Validate model
         run: make check-policies
 
-  check-docs:
+  check-regenerate:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -42,12 +42,18 @@ jobs:
         with:
           version: '${{ steps.versions.outputs.weaver_version }}'
 
-      - name: Check generated docs are in sync
+      - name: Regenerate and check committed outputs are in sync
         run: |
-          make generate-docs
-          if ! git diff --exit-code -- ./docs/registry; then
-            echo "FAIL: Generated registry documentation is out of sync!"
-            echo "Run 'make generate-docs' and commit the changes."
+          make regenerate
+          if ! git diff --exit-code -- ./docs/registry ./schema-snapshot; then
+            echo "FAIL: committed generated outputs are out of sync!"
+            echo "Run 'make regenerate' and commit the changes."
             exit 1
           fi
-          echo "OK: Deterministic generated documentation is up to date"
+          untracked=$(git ls-files --others --exclude-standard -- ./docs/registry ./schema-snapshot)
+          if [ -n "$untracked" ]; then
+            echo "FAIL: untracked files under generated outputs:"
+            echo "$untracked"
+            exit 1
+          fi
+          echo "OK: committed generated outputs are up to date"

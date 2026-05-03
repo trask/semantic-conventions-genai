@@ -12,8 +12,7 @@
       ],
       "matchStrings": [
         "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+) versioning=(?<versioning>\\S+)\\s+WEAVER_VERSION=(?<currentValue>\\S+)",
-        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+) versioning=(?<versioning>\\S+)\\s+SEMCONV_VERSION=(?<currentValue>\\S+)",
-        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+) versioning=(?<versioning>\\S+) ref=(?<currentValue>\\S+)\\s+POLICY_REPO_URL=(?<packageName>\\S+)\\s+POLICY_REPO_REF=(?<currentDigest>\\S+)"
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+) versioning=(?<versioning>\\S+)\\s+SEMCONV_VERSION=(?<currentValue>\\S+)"
       ]
     }
   ],
