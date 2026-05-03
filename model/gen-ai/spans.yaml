@@ -1,5 +1,16 @@
 file_format: definition/2
 attribute_groups:
+  - id: attributes.gen_ai.error
+    visibility: internal
+    attributes:
+      - ref: error.type
+        requirement_level:
+          conditionally_required: "if the operation ended in an error"
+        note: |
+          The `error.type` SHOULD match the error code returned by the Generative AI provider or the client library,
+          the canonical name of exception that occurred, or another low-cardinality error identifier.
+          Instrumentations SHOULD document the list of errors they report.
+
   - id: attributes.gen_ai.common
     visibility: internal
     attributes:
@@ -12,13 +23,7 @@ attribute_groups:
           custom model, the value should have a more specific name than the base model that's been fine-tuned.
       - ref: gen_ai.operation.name
         requirement_level: required
-      - ref: error.type
-        requirement_level:
-          conditionally_required: "if the operation ended in an error"
-        note: |
-          The `error.type` SHOULD match the error code returned by the Generative AI provider or the client library,
-          the canonical name of exception that occurred, or another low-cardinality error identifier.
-          Instrumentations SHOULD document the list of errors they report.
+      - ref_group: attributes.gen_ai.error
 
   - id: attributes.gen_ai.server
     visibility: internal
@@ -431,13 +436,7 @@ spans:
         requirement_level: opt_in
       - ref: gen_ai.tool.call.result
         requirement_level: opt_in
-      - ref: error.type
-        requirement_level:
-          conditionally_required: "if the operation ended in an error"
-        note: |
-          The `error.type` SHOULD match the error code returned by the Generative AI provider or the client library,
-          the canonical name of exception that occurred, or another low-cardinality error identifier.
-          Instrumentations SHOULD document the list of errors they report.
+      - ref_group: attributes.gen_ai.error
 
   - type: aws.bedrock.client
     kind: client
@@ -488,13 +487,7 @@ spans:
       - ref: gen_ai.operation.name
         requirement_level: required
         sampling_relevant: true
-      - ref: error.type
-        requirement_level:
-          conditionally_required: "if the operation ended in an error"
-        note: |
-          The `error.type` SHOULD match the error code returned by the Generative AI provider or the client library,
-          the canonical name of exception that occurred, or another low-cardinality error identifier.
-          Instrumentations SHOULD document the list of errors they report.
+      - ref_group: attributes.gen_ai.error
       - ref: gen_ai.workflow.name
         requirement_level:
           conditionally_required: when available

@@ -17,13 +17,7 @@ attribute_groups:
     visibility: internal
     attributes:
       - ref_group: metric_attributes.gen_ai
-      - ref: error.type
-        requirement_level:
-          conditionally_required: "if the operation ended in an error"
-        note: |
-          The `error.type` SHOULD match the error code returned by the Generative AI service,
-          the canonical name of exception that occurred, or another low-cardinality error identifier.
-          Instrumentations SHOULD document the list of errors they report.
+      - ref_group: attributes.gen_ai.error
   - id: metric_attributes.openai
     visibility: internal
     attributes:
@@ -54,13 +48,7 @@ metrics:
         metric_value_type: double
     attributes:
       - ref_group: metric_attributes.gen_ai
-      - ref: error.type
-        requirement_level:
-          conditionally_required: "if the operation ended in an error"
-        note: |
-          The `error.type` SHOULD match the error code returned by the Generative AI provider or the client library,
-          the canonical name of exception that occurred, or another low-cardinality error identifier.
-          Instrumentations SHOULD document the list of errors they report.
+      - ref_group: attributes.gen_ai.error
   - name: gen_ai.client.operation.time_to_first_chunk
     instrument: histogram
     unit: "s"

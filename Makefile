@@ -23,9 +23,11 @@ WEAVER := docker run --rm \
 	-e HOME=/tmp \
 	$(WEAVER_IMAGE)
 
-# Local cache of policies fetched from upstream (gitignored)
-LOCAL_POLICIES := .build/weaver-policies
-LOCAL_POLICY_STAMP := $(LOCAL_POLICIES)/.$(POLICY_REPO_REF)
+# Shared policy pack from open-telemetry/opentelemetry-weaver-packages. We
+# track `main` rather than pinning a SHA because Weaver panics in
+# `registry check` when fetching a remote policy pack by commit (reproduced
+# on 0.23.0). Switch back to a pinned ref once that is fixed upstream.
+WEAVER_POLICY_PACK := https://github.com/open-telemetry/opentelemetry-weaver-packages.git
 
 # Filtered copy of the upstream semantic-conventions model. We clone the
 # pinned upstream registry and delete the subdirectories that have been
@@ -72,18 +74,6 @@ UPSTREAM_DOCS_BASE := https://github.com/open-telemetry/semantic-conventions/blo
 # docs/attributes/ and stay relative.
 UPSTREAM_ATTR_NAMESPACES := azure client error exception jsonrpc network rpc server
 
-# Work around a Weaver 0.22.1 panic when `registry check` fetches a pinned remote
-# policy pack by commit SHA. Keep the policy source pinned, but materialize it as
-# a local checkout before running validation.
-$(LOCAL_POLICY_STAMP): $(VERSION_PINS_FILE)
-	@mkdir -p .build
-	rm -rf $(LOCAL_POLICIES)
-	git init -q $(LOCAL_POLICIES)
-	cd $(LOCAL_POLICIES) && git remote add origin $(POLICY_REPO_URL)
-	cd $(LOCAL_POLICIES) && git fetch --depth 1 origin $(POLICY_REPO_REF)
-	cd $(LOCAL_POLICIES) && git checkout --detach FETCH_HEAD
-	touch $(LOCAL_POLICY_STAMP)
-
 # Clone upstream semantic-conventions at the pinned version and drop the
 # subdirectories that have been migrated into this repo. See the long
 # comment on SC_UPSTREAM_FILTERED above.
@@ -114,11 +104,16 @@ $(SC_UPSTREAM_STAMP): $(VERSION_PINS_FILE)
 
 filter-upstream: $(SC_UPSTREAM_STAMP)
 
-# Validate the model and run shared policies
-check-policies: $(LOCAL_POLICY_STAMP) $(SC_UPSTREAM_STAMP)
+# Validate the model and run shared policies. Each `--policy` selects one
+# subdirectory of the weaver-packages repo via Weaver's `<url>[<subpath>]`
+# fetch syntax, so we never materialize a local copy.
+check-policies: $(SC_UPSTREAM_STAMP)
 	$(WEAVER) registry check \
 		-r ./model \
-		--policy $(LOCAL_POLICIES)/policies/check
+		--v2 \
+		--policy '$(WEAVER_POLICY_PACK)[policies/check/naming_conventions]' \
+		--policy '$(WEAVER_POLICY_PACK)[policies/check/backwards-compatibility]' \
+		--policy '$(WEAVER_POLICY_PACK)[policies/check/stability]'
 
 # Regenerate everything Weaver owns under docs/:
 #   1. The attribute registry pages under docs/registry/ (full directory of

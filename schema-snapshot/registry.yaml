@@ -599,7 +599,7 @@ refinements:
       - \u0027500\u0027
       key: error.type
       note: |
-        The `error.type` SHOULD match the error code returned by the Generative AI Evaluation provider or the client library,
+        The `error.type` SHOULD match the error code returned by the Generative AI provider or the client library,
         the canonical name of exception that occurred, or another low-cardinality error identifier.
         Instrumentations SHOULD document the list of errors they report.
       requirement_level:
@@ -1515,7 +1515,7 @@ refinements:
       - \u0027500\u0027
       key: error.type
       note: |
-        The `error.type` SHOULD match the error code returned by the Generative AI service,
+        The `error.type` SHOULD match the error code returned by the Generative AI provider or the client library,
         the canonical name of exception that occurred, or another low-cardinality error identifier.
         Instrumentations SHOULD document the list of errors they report.
       requirement_level:
@@ -11346,7 +11346,7 @@ registry:
       - \u0027500\u0027
       key: error.type
       note: |
-        The `error.type` SHOULD match the error code returned by the Generative AI Evaluation provider or the client library,
+        The `error.type` SHOULD match the error code returned by the Generative AI provider or the client library,
         the canonical name of exception that occurred, or another low-cardinality error identifier.
         Instrumentations SHOULD document the list of errors they report.
       requirement_level:
@@ -12257,7 +12257,7 @@ registry:
       - \u0027500\u0027
       key: error.type
       note: |
-        The `error.type` SHOULD match the error code returned by the Generative AI service,
+        The `error.type` SHOULD match the error code returned by the Generative AI provider or the client library,
         the canonical name of exception that occurred, or another low-cardinality error identifier.
         Instrumentations SHOULD document the list of errors they report.
       requirement_level:
