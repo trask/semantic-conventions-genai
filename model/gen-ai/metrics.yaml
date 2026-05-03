@@ -1,17 +1,9 @@
 file_format: definition/2
 attribute_groups:
   - id: metric_attributes.gen_ai
-    visibility: public
-    brief: 'This group describes GenAI metrics attributes'
-    stability: development
+    visibility: internal
     attributes:
-      - ref: server.address
-        brief: GenAI server address.
-        requirement_level: recommended
-      - ref: server.port
-        brief: GenAI server port.
-        requirement_level:
-          conditionally_required: If `server.address` is set.
+      - ref_group: attributes.gen_ai.server
       - ref: gen_ai.response.model
         requirement_level: recommended
       - ref: gen_ai.request.model
@@ -22,9 +14,7 @@ attribute_groups:
       - ref: gen_ai.operation.name
         requirement_level: required
   - id: metric_attributes.gen_ai.server
-    visibility: public
-    brief: 'This group describes GenAI server metrics attributes'
-    stability: development
+    visibility: internal
     attributes:
       - ref_group: metric_attributes.gen_ai
       - ref: error.type
@@ -35,9 +25,7 @@ attribute_groups:
           the canonical name of exception that occurred, or another low-cardinality error identifier.
           Instrumentations SHOULD document the list of errors they report.
   - id: metric_attributes.openai
-    visibility: public
-    brief: 'This group describes GenAI server metrics attributes'
-    stability: development
+    visibility: internal
     attributes:
       - ref: openai.response.service_tier
         requirement_level: recommended

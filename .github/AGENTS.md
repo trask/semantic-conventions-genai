@@ -8,6 +8,8 @@ For semantic-conventions PR work that needs repository-wide reference coverage, 
 
 For reviews of resulting reference coverage, capturability, and honest capture gaps, use the `evaluate-reference` skill under `.github/skills/evaluate-reference/`.
 
+For writing or editing weaver v2 definition schema (`file_format: definition/2`) — spans, metrics, events, attribute groups, or refinements — use the `define-v2` skill under `.github/skills/define-v2/`.
+
 Optimize all code in this repository for readability and simplicity.
 
 - Avoid advanced syntax when an equivalent simpler form is available.

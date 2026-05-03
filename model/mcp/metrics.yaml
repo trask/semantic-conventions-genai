@@ -1,39 +1,17 @@
 file_format: definition/2
 attribute_groups:
   - id: mcp.operation.metrics.attributes
-    visibility: public
-    brief: MCP request metrics attributes
-    stability: development
+    visibility: internal
     attributes:
       - ref_group: mcp.common.attributes
       - ref: mcp.resource.uri
         requirement_level: opt_in
 
   - id: mcp.session.metrics.attributes
-    visibility: public
-    brief: MCP session metrics attributes
-    stability: development
+    visibility: internal
     attributes:
       - ref: mcp.protocol.version
-      - ref: network.protocol.name
-        requirement_level:
-          recommended: When applicable.
-        examples:
-          - "http"
-          - "websocket"
-      - ref: network.protocol.version
-        note: ""  # overriding the default note
-        requirement_level:
-          recommended: When applicable.
-      - ref: jsonrpc.protocol.version
-        requirement_level:
-          recommended: when it's not `2.0`.
-      - ref: network.transport
-        brief: The transport protocol used for the MCP session.
-        note: |
-          This attribute SHOULD be set to `tcp` or `quic` if the transport protocol
-          is HTTP. It SHOULD be set to `pipe` if the transport is stdio.
-        examples: ["tcp", "quic", "pipe"]
+      - ref_group: mcp.network.protocol.attributes
       - ref: error.type
         requirement_level:
           conditionally_required: If and only if session ends with an error.
@@ -48,12 +26,7 @@ metrics:
     stability: development
     attributes:
       - ref_group: mcp.operation.metrics.attributes
-      - ref: server.address
-        requirement_level:
-          recommended: If applicable
-      - ref: server.port
-        requirement_level:
-          recommended: When `server.address` is set
+      - ref_group: mcp.client.address_and_port.attributes
 
   - name: mcp.server.operation.duration
     instrument: histogram
@@ -71,12 +44,7 @@ metrics:
     stability: development
     attributes:
       - ref_group: mcp.session.metrics.attributes
-      - ref: server.address
-        requirement_level:
-          recommended: If applicable
-      - ref: server.port
-        requirement_level:
-          recommended: When `server.address` is set
+      - ref_group: mcp.client.address_and_port.attributes
 
   - name: mcp.server.session.duration
     instrument: histogram
