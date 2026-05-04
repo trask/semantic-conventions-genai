@@ -23,6 +23,12 @@ If applicable, application developers are encouraged to use existing attributes 
 
 All registered attributes are listed by namespace in this registry.
 
+> [!WARNING]
+>
+> The following registry overview is a work in progress.
+>
+> Further attribute namespaces are currently being migrated and will appear in this registry soon.
+
 Currently, the following namespaces exist:
 
 - [AWS](aws.md)
