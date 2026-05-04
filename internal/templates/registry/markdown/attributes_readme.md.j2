@@ -1,3 +1,4 @@
+{%- import 'attribute_macros.j2' as attrs -%}
 <!--- Hugo front matter used to generate the website version of this page:
 linkTitle: Attributes
 --->
@@ -25,9 +26,7 @@ All registered attributes are listed by namespace in this registry.
 
 Currently, the following namespaces exist:
 
-- [AWS](aws.md)
-- [Gen AI](gen-ai.md)
-- [MCP](mcp.md)
-- [OpenAI](openai.md)
-
-[developers recommendations]: https://github.com/open-telemetry/semantic-conventions/blob/v1.41.0/docs/general/naming.md#recommendations-for-application-developers
+{% for bundle in ctx -%}
+- [{{ bundle.id | title_case | acronym }}]({{ bundle.id | kebab_case }}.md)
+{% endfor %}
+[developers recommendations]: {{ params.upstream_docs_base }}/docs/general/naming.md#recommendations-for-application-developers

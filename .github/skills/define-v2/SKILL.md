@@ -204,8 +204,10 @@ For every new signal, walk this tree before writing any yaml:
    common drifts and the easiest to fix in a final pass.
 9. Regenerate every committed artifact the repo produces from the model
    — `make package`, the snapshot target (`make schema-snapshot` here,
-   `make generate` in other registries), and `make generate-docs` if all
-   three exist — and compare against the baseline from step 2. See the
+   `make generate` in other registries), and the docs targets
+   (`make generate-registry generate-docs` here, or `make generate-docs`
+   in other registries) if all three exist — and compare against the
+   baseline from step 2. See the
    Output Format section for what each does and what diffs to expect.
    Do not stop the skill until each target has been run and the
    resulting diffs are linked.
@@ -257,11 +259,13 @@ and docs targets both consume the resolved model that package produces:
    Produces a committed, single-file snapshot of the resolved registry.
    This is not docs; it is a reviewable schema diff. Link the file. If
    CI has a "snapshot is in sync" check, this is the target it runs.
-3. **`make generate-docs`** (or `make docs`) — regenerates per-namespace
-   attribute pages under `docs/registry/` and refreshes the
+3. **The docs regeneration targets** — in this registry, `make
+   generate-registry` regenerates the per-namespace attribute pages
+   under `docs/registry/`, and `make generate-docs` refreshes the
    `<!-- semconv ... -->` snippet tables embedded in hand-authored docs.
-   This is the actual docs regeneration step; the snapshot target does
-   not do this.
+   In other registries these are typically combined under a single
+   `make generate-docs` (or `make docs`) target. This is the actual
+   docs regeneration step; the snapshot target does not do this.
 
 After running all three, do `git status` (or `git diff --name-only`)
 and link every file the regeneration changed, grouped as:

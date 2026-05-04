@@ -236,8 +236,6 @@ spans:
         sampling_relevant: true
       - ref: gen_ai.request.model
         sampling_relevant: true
-      - ref: gen_ai.request.top_k
-        requirement_level: recommended
 
   - type: gen_ai.embeddings.client
     kind: client

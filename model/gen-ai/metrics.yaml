@@ -104,3 +104,29 @@ metrics:
         metric_value_type: double
     attributes:
       - ref_group: metric_attributes.gen_ai
+
+metric_refinements:
+  - id: openai.client.token.usage
+    ref: gen_ai.client.token.usage
+    brief: >
+      OpenAI-specific extension to `gen_ai.client.token.usage`. Adds
+      `openai.response.service_tier` and `openai.response.system_fingerprint`
+      when the provider is `openai`.
+    stability: development
+    attributes:
+      - ref: openai.response.service_tier
+        requirement_level: recommended
+      - ref: openai.response.system_fingerprint
+        requirement_level: recommended
+  - id: openai.client.operation.duration
+    ref: gen_ai.client.operation.duration
+    brief: >
+      OpenAI-specific extension to `gen_ai.client.operation.duration`. Adds
+      `openai.response.service_tier` and `openai.response.system_fingerprint`
+      when the provider is `openai`.
+    stability: development
+    attributes:
+      - ref: openai.response.service_tier
+        requirement_level: recommended
+      - ref: openai.response.system_fingerprint
+        requirement_level: recommended

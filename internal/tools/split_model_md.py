@@ -21,7 +21,7 @@ merged ``model.md`` itself is left in place. Nothing here changes the actual
 generation pipeline -- it just reduces diff noise so real changes are easier
 to review.
 
-Run after ``make generate-docs``::
+Run after ``make generate-registry``::
 
     uv run internal/tools/split_model_md.py
 

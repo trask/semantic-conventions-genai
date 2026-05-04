@@ -47,12 +47,13 @@ to learn about the YAML file syntax.
 After updating the YAML, run:
 
 ```bash
-make generate-docs
+make generate-all
 ```
 
-This regenerates the attribute registry pages under `docs/registry/` and
+This regenerates the attribute registry pages under `docs/registry/`,
 refreshes the generated tables embedded in the hand-written docs under
-`docs/gen-ai/`.
+`docs/gen-ai/`, and updates the committed schema snapshot under
+`schema-snapshot/`.
 
 ### 3. Validate
 

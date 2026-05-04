@@ -60,7 +60,7 @@ stderr and left for manual follow-up.
 uv run internal/tools/overwrite_model_from_upstream.py --ref main
 uv run internal/tools/convert_model_to_v2.py
 make check-policies
-make generate-docs
+make generate-all
 ```
 
 Then diff against `HEAD`, re-apply this repo's local edits where they got
