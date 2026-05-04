@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  check:
+  check-policies:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -27,7 +27,7 @@ jobs:
       - name: Validate model
         run: make check-policies
 
-  check-regenerate:
+  check-generate:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

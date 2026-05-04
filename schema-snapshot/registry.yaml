@@ -4178,6 +4178,8 @@ refinements:
       note: anthropic.inference.client
     note: |
       `gen_ai.provider.name` MUST be set to `"anthropic"` and SHOULD be provided **at span creation time**.
+
+      **Span name** SHOULD be `{gen_ai.operation.name} {gen_ai.request.model}`.
     provenance:
       path: ./model/gen-ai/spans.yaml
     stability: development
@@ -5772,6 +5774,9 @@ refinements:
       note: gen_ai.create_agent.client
     note: |
       The `gen_ai.operation.name` SHOULD be `create_agent`.
+
+      **Span name** SHOULD be `create_agent {gen_ai.agent.name}`.
+      Semantic conventions for individual GenAI systems and frameworks MAY specify different span name format.
     provenance:
       path: ./model/gen-ai/spans.yaml
     stability: development
@@ -6031,6 +6036,7 @@ refinements:
       note: gen_ai.embeddings.client
     note: |
       The `gen_ai.operation.name` SHOULD be `embeddings`.
+      **Span name** SHOULD be `{gen_ai.operation.name} {gen_ai.request.model}`.
     provenance:
       path: ./model/gen-ai/spans.yaml
     stability: development
@@ -6202,6 +6208,8 @@ refinements:
       note: gen_ai.execute_tool.internal
     note: |
       `gen_ai.operation.name` SHOULD be `execute_tool`.
+
+      **Span name** SHOULD be `execute_tool {gen_ai.tool.name}`.
 
       GenAI instrumentations that can instrument tool execution calls SHOULD do so,
       unless another instrumentation can reliably cover all supported tool types.
@@ -6856,6 +6864,10 @@ refinements:
       call to models running in the same process. It\u0027s RECOMMENDED to use `CLIENT` kind
       when the GenAI system being instrumented usually runs in a different process than its
       client or when the GenAI call happens over instrumented protocol such as HTTP.
+
+      **Span name** SHOULD be `{gen_ai.operation.name} {gen_ai.request.model}`.
+      Semantic conventions for individual GenAI systems and frameworks MAY specify different span name format
+      and MUST follow the overall [guidelines for span names](https://github.com/open-telemetry/opentelemetry-specification/blob/v1.56.0/specification/trace/api.md#span).
     provenance:
       path: ./model/gen-ai/spans.yaml
     stability: development
@@ -7501,6 +7513,10 @@ refinements:
     note: |
       The `gen_ai.operation.name` SHOULD be `invoke_agent`.
 
+      **Span name** SHOULD be `invoke_agent {gen_ai.agent.name}` if `gen_ai.agent.name` is readily available.
+      When `gen_ai.agent.name` is not available, it SHOULD be `invoke_agent`.
+      Semantic conventions for individual GenAI systems and frameworks MAY specify different span name format.
+
       Examples: OpenAI Assistants API, AWS Bedrock Agents.
     provenance:
       path: ./model/gen-ai/spans.yaml
@@ -8122,6 +8138,10 @@ refinements:
     note: |
       The `gen_ai.operation.name` SHOULD be `invoke_agent`.
 
+      **Span name** SHOULD be `invoke_agent {gen_ai.agent.name}` if `gen_ai.agent.name` is readily available.
+      When `gen_ai.agent.name` is not available, it SHOULD be `invoke_agent`.
+      Semantic conventions for individual GenAI systems and frameworks MAY specify different span name format.
+
       Examples: LangChain agents, CrewAI agents.
     provenance:
       path: ./model/gen-ai/spans.yaml
@@ -8318,6 +8338,7 @@ refinements:
       note: gen_ai.invoke_workflow.internal
     note: |
       The `gen_ai.operation.name` SHOULD be `invoke_workflow`.
+      **Span name** SHOULD be `invoke_workflow {gen_ai.workflow.name}`.
 
       This span SHOULD be reported by the instrumentations when they can
       reliably determine that invocation is a workflow (i.e. groups several agent
@@ -8601,6 +8622,9 @@ refinements:
       note: gen_ai.retrieval.client
     note: |
       The `gen_ai.operation.name` SHOULD be `retrieval`.
+
+      **Span name** SHOULD be `{gen_ai.operation.name} {gen_ai.data_source.id}`. Semantic conventions
+      for individual GenAI providers and retrievers MAY specify different span name format.
     provenance:
       path: ./model/gen-ai/spans.yaml
     stability: development
@@ -15169,6 +15193,9 @@ registry:
       note: gen_ai.create_agent.client
     note: |
       The `gen_ai.operation.name` SHOULD be `create_agent`.
+
+      **Span name** SHOULD be `create_agent {gen_ai.agent.name}`.
+      Semantic conventions for individual GenAI systems and frameworks MAY specify different span name format.
     provenance:
       path: ./model/gen-ai/spans.yaml
     stability: development
@@ -15427,6 +15454,7 @@ registry:
       note: gen_ai.embeddings.client
     note: |
       The `gen_ai.operation.name` SHOULD be `embeddings`.
+      **Span name** SHOULD be `{gen_ai.operation.name} {gen_ai.request.model}`.
     provenance:
       path: ./model/gen-ai/spans.yaml
     stability: development
@@ -15597,6 +15625,8 @@ registry:
       note: gen_ai.execute_tool.internal
     note: |
       `gen_ai.operation.name` SHOULD be `execute_tool`.
+
+      **Span name** SHOULD be `execute_tool {gen_ai.tool.name}`.
 
       GenAI instrumentations that can instrument tool execution calls SHOULD do so,
       unless another instrumentation can reliably cover all supported tool types.
@@ -16250,6 +16280,10 @@ registry:
       call to models running in the same process. It\u0027s RECOMMENDED to use `CLIENT` kind
       when the GenAI system being instrumented usually runs in a different process than its
       client or when the GenAI call happens over instrumented protocol such as HTTP.
+
+      **Span name** SHOULD be `{gen_ai.operation.name} {gen_ai.request.model}`.
+      Semantic conventions for individual GenAI systems and frameworks MAY specify different span name format
+      and MUST follow the overall [guidelines for span names](https://github.com/open-telemetry/opentelemetry-specification/blob/v1.56.0/specification/trace/api.md#span).
     provenance:
       path: ./model/gen-ai/spans.yaml
     stability: development
@@ -16894,6 +16928,10 @@ registry:
     note: |
       The `gen_ai.operation.name` SHOULD be `invoke_agent`.
 
+      **Span name** SHOULD be `invoke_agent {gen_ai.agent.name}` if `gen_ai.agent.name` is readily available.
+      When `gen_ai.agent.name` is not available, it SHOULD be `invoke_agent`.
+      Semantic conventions for individual GenAI systems and frameworks MAY specify different span name format.
+
       Examples: OpenAI Assistants API, AWS Bedrock Agents.
     provenance:
       path: ./model/gen-ai/spans.yaml
@@ -17514,6 +17552,10 @@ registry:
     note: |
       The `gen_ai.operation.name` SHOULD be `invoke_agent`.
 
+      **Span name** SHOULD be `invoke_agent {gen_ai.agent.name}` if `gen_ai.agent.name` is readily available.
+      When `gen_ai.agent.name` is not available, it SHOULD be `invoke_agent`.
+      Semantic conventions for individual GenAI systems and frameworks MAY specify different span name format.
+
       Examples: LangChain agents, CrewAI agents.
     provenance:
       path: ./model/gen-ai/spans.yaml
@@ -17709,6 +17751,7 @@ registry:
       note: gen_ai.invoke_workflow.internal
     note: |
       The `gen_ai.operation.name` SHOULD be `invoke_workflow`.
+      **Span name** SHOULD be `invoke_workflow {gen_ai.workflow.name}`.
 
       This span SHOULD be reported by the instrumentations when they can
       reliably determine that invocation is a workflow (i.e. groups several agent
@@ -17991,6 +18034,9 @@ registry:
       note: gen_ai.retrieval.client
     note: |
       The `gen_ai.operation.name` SHOULD be `retrieval`.
+
+      **Span name** SHOULD be `{gen_ai.operation.name} {gen_ai.data_source.id}`. Semantic conventions
+      for individual GenAI providers and retrievers MAY specify different span name format.
     provenance:
       path: ./model/gen-ai/spans.yaml
     stability: development

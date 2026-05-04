@@ -20,11 +20,12 @@ WEAVER := docker run --rm \
 	-e HOME=/tmp \
 	$(WEAVER_IMAGE)
 
-# Shared policy pack from open-telemetry/opentelemetry-weaver-packages. We
-# track `main` rather than pinning a SHA because Weaver panics in
+# Shared policy pack from open-telemetry/opentelemetry-weaver-packages. The URL
+# and ref are pinned in versions.env (POLICY_REPO_URL, POLICY_REPO_REF). We
+# track a named ref rather than a commit SHA because Weaver panics in
 # `registry check` when fetching a remote policy pack by commit (reproduced
-# on 0.23.0). Switch back to a pinned ref once that is fixed upstream.
-WEAVER_POLICY_PACK := https://github.com/open-telemetry/opentelemetry-weaver-packages.git
+# on 0.23.0). See versions.env for the pin to switch back once that is fixed.
+WEAVER_POLICY_PACK := $(POLICY_REPO_URL)@$(POLICY_REPO_REF)
 
 # Filtered copy of the upstream semantic-conventions model. We clone the
 # pinned upstream registry and delete the subdirectories that have been
@@ -95,7 +96,7 @@ $(SC_UPSTREAM_STAMP): $(VERSION_PINS_FILE)
 filter-upstream: $(SC_UPSTREAM_STAMP)
 
 # Validate the model and run shared policies. Each `--policy` selects one
-# subdirectory of the weaver-packages repo via Weaver's `<url>[<subpath>]`
+# subdirectory of the weaver-packages repo via Weaver's `<url>@<ref>[<subpath>]`
 # fetch syntax, so we never materialize a local copy.
 check-policies: $(SC_UPSTREAM_STAMP)
 	$(WEAVER) registry check \
@@ -106,7 +107,7 @@ check-policies: $(SC_UPSTREAM_STAMP)
 		--policy '$(WEAVER_POLICY_PACK)[policies/check/stability]'
 
 # Generate the attribute registry pages under docs/registry/ (full directory
-# of generated markdown). Templates live under internal/templates/registry/
+# of generated markdown). Templates live under templates/registry/
 # markdown/ and consume the v2 resolved registry directly
 # (`.registry.attributes` / `.registry.spans` / `.refinements.spans` etc.).
 # Local-vs-upstream attribute links are decided per-attribute via the
@@ -116,7 +117,7 @@ generate-registry: $(SC_UPSTREAM_STAMP)
 	$(WEAVER) registry generate \
 		-r ./model \
 		--v2 \
-		-t ./internal/templates/registry \
+		-t ./templates/registry \
 		--param upstream_docs_base=$(UPSTREAM_DOCS_BASE) \
 		markdown \
 		./docs/registry
@@ -127,7 +128,7 @@ generate-docs: $(SC_UPSTREAM_STAMP)
 	$(WEAVER) registry update-markdown \
 		-r ./model \
 		--v2 \
-		-t ./internal/templates \
+		-t ./templates \
 		--target markdown \
 		--param registry_base_url=/docs/registry/ \
 		--param upstream_docs_base=$(UPSTREAM_DOCS_BASE) \
@@ -157,7 +158,7 @@ schema-snapshot: $(SC_UPSTREAM_STAMP)
 	$(WEAVER) registry generate \
 		-r ./model \
 		--v2 \
-		-t ./internal/templates/registry \
+		-t ./templates/registry \
 		yaml \
 		./schema-snapshot
 

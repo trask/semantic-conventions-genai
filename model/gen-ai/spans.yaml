@@ -232,6 +232,11 @@ spans:
       call to models running in the same process. It's RECOMMENDED to use `CLIENT` kind
       when the GenAI system being instrumented usually runs in a different process than its
       client or when the GenAI call happens over instrumented protocol such as HTTP.
+
+      **Span name** SHOULD be `{gen_ai.operation.name} {gen_ai.request.model}`.
+      Semantic conventions for individual GenAI systems and frameworks MAY specify different span name format
+      and MUST follow the overall [guidelines for span names](https://github.com/open-telemetry/opentelemetry-specification/blob/v1.56.0/specification/trace/api.md#span).
+
     stability: development
     attributes:
       - ref_group: attributes.gen_ai.inference.client
@@ -258,6 +263,7 @@ spans:
       that generates an embeddings based on the input.
     note: |
       The `gen_ai.operation.name` SHOULD be `embeddings`.
+      **Span name** SHOULD be `{gen_ai.operation.name} {gen_ai.request.model}`.
     stability: development
     attributes:
       - ref_group: attributes.gen_ai.common.client
@@ -292,6 +298,9 @@ spans:
       that retrieves relevant information or context from a vector database or search system.
     note: |
       The `gen_ai.operation.name` SHOULD be `retrieval`.
+
+      **Span name** SHOULD be `{gen_ai.operation.name} {gen_ai.data_source.id}`. Semantic conventions
+      for individual GenAI providers and retrievers MAY specify different span name format.
     stability: development
     attributes:
       - ref_group: attributes.gen_ai.common.client
@@ -319,6 +328,9 @@ spans:
       with remote agent services.
     note: |
       The `gen_ai.operation.name` SHOULD be `create_agent`.
+
+      **Span name** SHOULD be `create_agent {gen_ai.agent.name}`.
+      Semantic conventions for individual GenAI systems and frameworks MAY specify different span name format.
     stability: development
     attributes:
       - ref_group: attributes.gen_ai.common.client
@@ -362,6 +374,10 @@ spans:
     note: |
       The `gen_ai.operation.name` SHOULD be `invoke_agent`.
 
+      **Span name** SHOULD be `invoke_agent {gen_ai.agent.name}` if `gen_ai.agent.name` is readily available.
+      When `gen_ai.agent.name` is not available, it SHOULD be `invoke_agent`.
+      Semantic conventions for individual GenAI systems and frameworks MAY specify different span name format.
+
       Examples: OpenAI Assistants API, AWS Bedrock Agents.
     stability: development
     attributes:
@@ -390,6 +406,10 @@ spans:
     note: |
       The `gen_ai.operation.name` SHOULD be `invoke_agent`.
 
+      **Span name** SHOULD be `invoke_agent {gen_ai.agent.name}` if `gen_ai.agent.name` is readily available.
+      When `gen_ai.agent.name` is not available, it SHOULD be `invoke_agent`.
+      Semantic conventions for individual GenAI systems and frameworks MAY specify different span name format.
+
       Examples: LangChain agents, CrewAI agents.
     stability: development
     attributes:
@@ -410,6 +430,8 @@ spans:
     brief: Describes tool execution span.
     note: |
       `gen_ai.operation.name` SHOULD be `execute_tool`.
+
+      **Span name** SHOULD be `execute_tool {gen_ai.tool.name}`.
 
       GenAI instrumentations that can instrument tool execution calls SHOULD do so,
       unless another instrumentation can reliably cover all supported tool types.
@@ -466,6 +488,7 @@ spans:
       or other operations involving generative AI.
     note: |
       The `gen_ai.operation.name` SHOULD be `invoke_workflow`.
+      **Span name** SHOULD be `invoke_workflow {gen_ai.workflow.name}`.
 
       This span SHOULD be reported by the instrumentations when they can
       reliably determine that invocation is a workflow (i.e. groups several agent
@@ -556,6 +579,8 @@ span_refinements:
       and override the semantic conventions for [Gen AI Spans](gen-ai-spans.md).
     note: |
       `gen_ai.provider.name` MUST be set to `"anthropic"` and SHOULD be provided **at span creation time**.
+
+      **Span name** SHOULD be `{gen_ai.operation.name} {gen_ai.request.model}`.
     stability: development
     attributes:
       - ref_group: attributes.gen_ai.inference.client
