@@ -824,13 +824,12 @@ and SHOULD be provided **at span creation time** (if provided at all):
 Represents an agent planning or task decomposition phase.
 
 The `gen_ai.operation.name` SHOULD be `plan`.
-**Span name** SHOULD be `plan {gen_ai.agent.name}` if `gen_ai.agent.name` is readily available.
-When `gen_ai.agent.name` is not available, it SHOULD be `plan`.
 
 A plan span represents the decision phase where an agent formulates
-a strategy before executing it. The LLM call that generates the plan is a child
-of the plan span, and the tool or task spans produced from the plan are sibling
-operations under the same `invoke_agent` span.
+a strategy before executing it. The LLM call that generates the plan
+SHOULD be a child of the plan span, and the tool or task spans produced
+from the plan are typically sibling operations under the same
+`invoke_agent` span.
 
 This span SHOULD be reported by instrumentations when they can reliably determine
 that the operation being instrumented is planning or task decomposition, and SHOULD

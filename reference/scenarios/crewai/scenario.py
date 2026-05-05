@@ -215,10 +215,15 @@ def run_crew():
 def run_crew_planning():
     """Scenario: agent planning phase via CrewPlanner with reference implementation.
 
-    CrewPlanner produces a strategy before tasks are executed. The planning
-    LLM call happens inside the plan span; the tool/task spans that follow
-    from the produced plan are siblings under the surrounding invoke_agent
-    span (not modeled here -- planning is emitted standalone).
+    CrewPlanner produces a strategy before tasks are executed. CrewPlanner
+    synthesizes its own internal Agent(role="Task Execution Planner", ...) to
+    actually run the planning LLM call (see CrewPlanner._create_planning_agent
+    in crewai/utilities/planning_handler.py); that planner agent -- not the
+    worker agent owning the surrounding tasks -- is what `gen_ai.agent.id`
+    and `gen_ai.agent.name` should identify on the plan span. The tool/task
+    spans that follow from the produced plan are siblings under the
+    surrounding invoke_agent span (not modeled here -- planning is emitted
+    standalone).
     """
     print("  [crew] agent planning phase (reference implementation)")
     os.environ["CREWAI_DISABLE_TELEMETRY"] = "true"
@@ -256,17 +261,22 @@ def run_crew_planning():
         agent=researcher,
     )
 
-    # CrewPlanner synthesizes the planning agent and task internally; we
-    # exercise the public construction path here so the import surface is
-    # honestly covered, then emit the plan span manually around the
-    # underlying chat call.
+    # CrewPlanner._handle_crew_planning() drives a real LLM round-trip via
+    # planning_agent.execute_task(...) with output_pydantic=PlannerTaskPydanticOutput,
+    # which the mock server cannot satisfy without library-specific schema
+    # support. The closest honest reference is therefore: build the same
+    # planner agent CrewPlanner uses internally (Agent(role="Task Execution
+    # Planner", ...)), drive _create_tasks_summary() to exercise the real
+    # input-construction path, and emit the chat span manually around the
+    # planning LLM call we cannot route through the mock here.
     planner = CrewPlanner(tasks=[task], planning_agent_llm=llm)
     tasks_summary = planner._create_tasks_summary()
+    planning_agent = planner._create_planning_agent()
 
-    with _reference_tracer.start_as_current_span(f"plan {researcher.role}") as plan_span:
+    with _reference_tracer.start_as_current_span(f"plan {planning_agent.role}") as plan_span:
         plan_span.set_attribute("gen_ai.operation.name", "plan")
-        plan_span.set_attribute("gen_ai.agent.id", str(researcher.id))
-        plan_span.set_attribute("gen_ai.agent.name", researcher.role)
+        plan_span.set_attribute("gen_ai.agent.id", str(planning_agent.id))
+        plan_span.set_attribute("gen_ai.agent.name", planning_agent.role)
 
         with _reference_tracer.start_as_current_span("chat gpt-4o-mini") as chat_span:
             chat_span.set_attribute("gen_ai.operation.name", "chat")

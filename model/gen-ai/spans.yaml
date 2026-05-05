@@ -488,13 +488,12 @@ spans:
       Represents an agent planning or task decomposition phase.
     note: |
       The `gen_ai.operation.name` SHOULD be `plan`.
-      **Span name** SHOULD be `plan {gen_ai.agent.name}` if `gen_ai.agent.name` is readily available.
-      When `gen_ai.agent.name` is not available, it SHOULD be `plan`.
 
       A plan span represents the decision phase where an agent formulates
-      a strategy before executing it. The LLM call that generates the plan is a child
-      of the plan span, and the tool or task spans produced from the plan are sibling
-      operations under the same `invoke_agent` span.
+      a strategy before executing it. The LLM call that generates the plan
+      SHOULD be a child of the plan span, and the tool or task spans produced
+      from the plan are typically sibling operations under the same
+      `invoke_agent` span.
 
       This span SHOULD be reported by instrumentations when they can reliably determine
       that the operation being instrumented is planning or task decomposition, and SHOULD
@@ -509,16 +508,10 @@ spans:
       work, while a plan span represents strategy formulation before execution.
     stability: development
     attributes:
+      - ref_group: attributes.gen_ai.error
       - ref: gen_ai.operation.name
         requirement_level: required
         sampling_relevant: true
-      - ref: error.type
-        requirement_level:
-          conditionally_required: "if the operation ended in an error"
-        note: |
-          The `error.type` SHOULD match the error code returned by the Generative AI provider or the client library,
-          the canonical name of exception that occurred, or another low-cardinality error identifier.
-          Instrumentations SHOULD document the list of errors they report.
       - ref: gen_ai.agent.id
         requirement_level:
           conditionally_required: if applicable.
