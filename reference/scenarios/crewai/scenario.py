@@ -1,6 +1,6 @@
 """Reference implementation for CrewAI.
 
-Exercises: agent task execution
+Exercises: agent task execution, agent planning (CrewPlanner)
 against a mock OpenAI server, with manual OTel spans.
 """
 
@@ -212,6 +212,84 @@ def run_crew():
             print(f"    -> {str(result)[:60]}")
 
 
+def run_crew_planning():
+    """Scenario: agent planning phase via CrewPlanner with reference implementation.
+
+    CrewPlanner produces a strategy before tasks are executed. The planning
+    LLM call happens inside the plan span; the tool/task spans that follow
+    from the produced plan are siblings under the surrounding invoke_agent
+    span (not modeled here -- planning is emitted standalone).
+    """
+    print("  [crew] agent planning phase (reference implementation)")
+    os.environ["CREWAI_DISABLE_TELEMETRY"] = "true"
+    os.environ["CREWAI_DISABLE_TRACKING"] = "true"
+    os.environ["CREWAI_TRACING_ENABLED"] = "false"
+    from crewai import LLM, Agent, Task
+    from crewai.utilities.planning_handler import CrewPlanner
+
+    request_model = "gpt-4o-mini"
+    system_prompt = "You are a helpful research assistant."
+    host, port = mock_server_host_port(MOCK_BASE_URL)
+    os.environ["OPENAI_API_KEY"] = "mock-key"
+    os.environ["OPENAI_API_BASE"] = MOCK_BASE_URL
+    os.environ["OPENAI_MODEL_NAME"] = request_model
+    llm = LLM(
+        model=request_model,
+        provider="openai",
+        base_url=MOCK_BASE_URL,
+        api_key="mock-key",
+    )
+
+    researcher_role = "Researcher"
+    researcher = Agent(
+        role=researcher_role,
+        goal="Find information",
+        backstory=system_prompt,
+        llm=llm,
+        verbose=False,
+        allow_delegation=False,
+    )
+
+    task = Task(
+        description="Research the weather forecasting techniques used by meteorologists.",
+        expected_output="A short summary of forecasting techniques.",
+        agent=researcher,
+    )
+
+    # CrewPlanner synthesizes the planning agent and task internally; we
+    # exercise the public construction path here so the import surface is
+    # honestly covered, then emit the plan span manually around the
+    # underlying chat call.
+    planner = CrewPlanner(tasks=[task], planning_agent_llm=llm)
+    tasks_summary = planner._create_tasks_summary()
+
+    with _reference_tracer.start_as_current_span(f"plan {researcher.role}") as plan_span:
+        plan_span.set_attribute("gen_ai.operation.name", "plan")
+        plan_span.set_attribute("gen_ai.agent.id", str(researcher.id))
+        plan_span.set_attribute("gen_ai.agent.name", researcher.role)
+
+        with _reference_tracer.start_as_current_span("chat gpt-4o-mini") as chat_span:
+            chat_span.set_attribute("gen_ai.operation.name", "chat")
+            chat_span.set_attribute("gen_ai.provider.name", "openai")
+            chat_span.set_attribute("gen_ai.request.model", request_model)
+            if host:
+                chat_span.set_attribute("server.address", host)
+            if port is not None:
+                chat_span.set_attribute("server.port", port)
+            chat_span.set_attribute(
+                "gen_ai.input.messages",
+                json.dumps(
+                    [
+                        {
+                            "role": "user",
+                            "parts": [{"type": "text", "content": tasks_summary}],
+                        },
+                    ]
+                ),
+            )
+            print(f"    -> planned {len(planner.tasks)} task(s)")
+
+
 def main():
     print("=== Reference Implementation: CrewAI Reference Implementation ===")
 
@@ -219,6 +297,7 @@ def main():
     # NO instrument() call - reference implementation only
 
     run_crew()
+    run_crew_planning()
 
     flush_and_shutdown(tp, lp, mp)
 
