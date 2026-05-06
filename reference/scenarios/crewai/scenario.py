@@ -261,17 +261,21 @@ def run_crew_planning():
         agent=researcher,
     )
 
-    # CrewPlanner._handle_crew_planning() drives a real LLM round-trip via
-    # planning_agent.execute_task(...) with output_pydantic=PlannerTaskPydanticOutput,
-    # which the mock server cannot satisfy without library-specific schema
-    # support. The closest honest reference is therefore: build the same
-    # planner agent CrewPlanner uses internally (Agent(role="Task Execution
-    # Planner", ...)), drive _create_tasks_summary() to exercise the real
-    # input-construction path, and emit the chat span manually around the
-    # planning LLM call we cannot route through the mock here.
+    # Build the same planner agent CrewPlanner uses internally so the span
+    # attributes refer to the agent that actually runs the planning LLM call.
+    # CrewPlanner._handle_crew_planning() then drives a real LLM round-trip
+    # via planning_agent.execute_task(...) with
+    # output_pydantic=PlannerTaskPydanticOutput; the mock server returns a
+    # PlannerTaskPydanticOutput-shaped JSON body for messages containing the
+    # planner role string (see _mock_chat_content), so this exercises the
+    # real planning code path end-to-end.
     planner = CrewPlanner(tasks=[task], planning_agent_llm=llm)
-    tasks_summary = planner._create_tasks_summary()
     planning_agent = planner._create_planning_agent()
+    # Reuse the synthesized planner agent so the span attrs and the LLM
+    # call refer to the same Agent instance.
+    planner._create_planning_agent = lambda: planning_agent
+    captured_completion = None
+    captured_messages = None
 
     with _reference_tracer.start_as_current_span(f"plan {planning_agent.role}") as plan_span:
         plan_span.set_attribute("gen_ai.operation.name", "plan")
@@ -286,18 +290,71 @@ def run_crew_planning():
                 chat_span.set_attribute("server.address", host)
             if port is not None:
                 chat_span.set_attribute("server.port", port)
-            chat_span.set_attribute(
-                "gen_ai.input.messages",
-                json.dumps(
-                    [
-                        {
-                            "role": "user",
-                            "parts": [{"type": "text", "content": tasks_summary}],
-                        },
-                    ]
-                ),
-            )
-            print(f"    -> planned {len(planner.tasks)} task(s)")
+
+            # CrewAI routes calls with a Pydantic response model through
+            # beta.chat.completions.parse (see crewai/llms/providers/openai/
+            # completion.py around line 1612), not the regular create path.
+            # Patch parse so we capture the real outgoing messages and the
+            # real ParsedChatCompletion response.
+            original_parse = llm._client.beta.chat.completions.parse
+
+            def _capture_parse(*args, **kwargs):
+                nonlocal captured_completion, captured_messages
+                captured_messages = kwargs.get("messages")
+                response = original_parse(*args, **kwargs)
+                captured_completion = response
+                return response
+
+            llm._client.beta.chat.completions.parse = _capture_parse
+            try:
+                result = planner._handle_crew_planning()
+            finally:
+                llm._client.beta.chat.completions.parse = original_parse
+
+            if captured_messages is not None:
+                system_messages = [m for m in captured_messages if m.get("role") == "system"]
+                user_messages = [m for m in captured_messages if m.get("role") == "user"]
+                if system_messages:
+                    chat_span.set_attribute(
+                        "gen_ai.system_instructions",
+                        json.dumps([{"parts": [{"type": "text", "content": m["content"]}]} for m in system_messages]),
+                    )
+                if user_messages:
+                    chat_span.set_attribute(
+                        "gen_ai.input.messages",
+                        json.dumps(
+                            [
+                                {"role": "user", "parts": [{"type": "text", "content": m["content"]}]}
+                                for m in user_messages
+                            ]
+                        ),
+                    )
+
+            if captured_completion is not None:
+                chat_span.set_attribute("gen_ai.response.model", captured_completion.model)
+                chat_span.set_attribute("gen_ai.response.id", captured_completion.id)
+                chat_span.set_attribute(
+                    "gen_ai.response.finish_reasons",
+                    [choice.finish_reason for choice in captured_completion.choices],
+                )
+                if captured_completion.usage:
+                    chat_span.set_attribute("gen_ai.usage.input_tokens", captured_completion.usage.prompt_tokens)
+                    chat_span.set_attribute("gen_ai.usage.output_tokens", captured_completion.usage.completion_tokens)
+                if captured_completion.choices:
+                    assistant_content = captured_completion.choices[0].message.content
+                    if assistant_content:
+                        chat_span.set_attribute(
+                            "gen_ai.output.messages",
+                            json.dumps(
+                                [
+                                    {
+                                        "role": "assistant",
+                                        "parts": [{"type": "text", "content": assistant_content}],
+                                    }
+                                ]
+                            ),
+                        )
+            print(f"    -> planned {len(result.list_of_plans_per_task)} task(s)")
 
 
 def main():

@@ -108,13 +108,36 @@ RESPONSES_RESPONSE = {
 
 
 def _mock_chat_content(body):
+    message_text = "\n".join(
+        message.get("content", "") for message in body.get("messages", []) if isinstance(message.get("content"), str)
+    )
+
+    # CrewAI CrewPlanner: detect via the planning agent's role string and
+    # return a PlannerTaskPydanticOutput-shaped JSON body that
+    # crewai.utilities.converter.validate_model can model_validate_json into
+    # PlannerTaskPydanticOutput. The number of plans returned matches the
+    # number of "Task Number N -" markers the planner injects into the user
+    # message via CrewPlanner._create_tasks_summary.
+    if "Task Execution Planner" in message_text:
+        task_count = max(1, message_text.count("Task Number "))
+        plans = [
+            {
+                "task_number": i + 1,
+                "task": f"task {i + 1}",
+                "plan": (
+                    f"Step 1: Identify the inputs required for task {i + 1}. "
+                    "Step 2: Run the appropriate tool. "
+                    "Step 3: Summarize the result."
+                ),
+            }
+            for i in range(task_count)
+        ]
+        return json.dumps({"list_of_plans_per_task": plans})
+
     response_format = body.get("response_format") or {}
     if response_format.get("type") != "json_object":
         return "This is a response from the mock server."
 
-    message_text = "\n".join(
-        message.get("content", "") for message in body.get("messages", []) if isinstance(message.get("content"), str)
-    )
     if "Relevance-Judge" in message_text or "Relevance Evaluator" in message_text:
         return json.dumps(
             {
