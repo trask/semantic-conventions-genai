@@ -134,6 +134,19 @@ def _mock_chat_content(body):
         ]
         return json.dumps({"list_of_plans_per_task": plans})
 
+    # langchain-experimental Plan-and-Execute: detect via the SYSTEM_PROMPT
+    # injected by load_chat_planner (chat_planner.py:15-24) and return a
+    # numbered-step list that PlanningOutputParser splits on "\n\d+\. " to
+    # build a Plan(steps=[Step(value=...), ...]).
+    if "<END_OF_PLAN>" in message_text:
+        return (
+            "Plan:\n"
+            "1. Identify the inputs required to answer the question.\n"
+            "2. Look up the relevant facts.\n"
+            "3. Given the above steps taken, please respond to the users original question.\n"
+            "<END_OF_PLAN>"
+        )
+
     response_format = body.get("response_format") or {}
     if response_format.get("type") != "json_object":
         return "This is a response from the mock server."
