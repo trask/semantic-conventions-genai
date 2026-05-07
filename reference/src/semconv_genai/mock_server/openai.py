@@ -134,11 +134,36 @@ def _mock_chat_content(body):
         ]
         return json.dumps({"list_of_plans_per_task": plans})
 
+    # langchain-experimental Plan-and-Execute (OutputFixingParser repair):
+    # when the original parser raises and OutputFixingParser issues a second
+    # LLM call wrapping the malformed completion in NAIVE_FIX_PROMPT (see
+    # langchain_classic/output_parsers/prompts.py), detect the literal
+    # NAIVE_FIX text and return a valid plan body so the repair succeeds.
+    # Match this BEFORE the <END_OF_PLAN> branch since the repair prompt
+    # carries the original malformed completion (no <END_OF_PLAN>) but is
+    # uniquely identified by the NAIVE_FIX wrapper text.
+    if "the Completion did not satisfy the constraints given in the Instructions" in message_text:
+        return (
+            "Plan:\n"
+            "1. Reconstruct the user request from the original input.\n"
+            "2. Apply the planning rubric to produce a step list.\n"
+            "3. Given the above steps taken, please respond to the users original question.\n"
+            "<END_OF_PLAN>"
+        )
+
     # langchain-experimental Plan-and-Execute: detect via the SYSTEM_PROMPT
     # injected by load_chat_planner (chat_planner.py:15-24) and return a
     # numbered-step list that PlanningOutputParser splits on "\n\d+\. " to
     # build a Plan(steps=[Step(value=...), ...]).
     if "<END_OF_PLAN>" in message_text:
+        # Force-malformed branch: when the scenario injects the
+        # [FORCE_MALFORMED] sentinel in the user message, return text that
+        # cannot be parsed as a numbered-step plan. This exercises the
+        # OutputFixingParser repair path so the trace shows two chat
+        # children under one plan span.
+        if "[FORCE_MALFORMED]" in message_text:
+            return "I am unable to produce a plan in the requested format right now."
+
         return (
             "Plan:\n"
             "1. Identify the inputs required to answer the question.\n"
