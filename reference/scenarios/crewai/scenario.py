@@ -357,6 +357,167 @@ def run_crew_planning():
             print(f"    -> planned {len(result.list_of_plans_per_task)} task(s)")
 
 
+def run_crew_planning_with_native_retry():
+    """Scenario: planning that exercises CrewAI's natural multi-call path.
+
+    Demonstrates real multi-call planning through CrewAI's normal agent
+    execution flow (no scenario-side parser shim, no Converter manual
+    instantiation, no supports_function_calling override). The mock returns
+    a refusal-shaped response on the planner's first beta.parse call,
+    which causes CrewAI's _handle_completion (crewai/llms/providers/openai/
+    completion.py) to fall through to a plain chat.completions.create.
+    The planner's LLM instance leaves self.response_format unset, so that
+    second call's body carries no response_format key. The mock returns
+    plain text on that second call. CrewAI's Task._export_output then
+    routes the text through convert_to_model -> handle_partial_json ->
+    convert_with_instructions, which constructs a Converter and issues a
+    third LLM call carrying the schema-conversion system prompt. The mock
+    detects the schema-conversion prompt and returns valid Pydantic JSON.
+
+    Three real LLM round-trips for one planner.plan() call, all under one
+    plan span via 100% library-native code paths. The [FORCE_PLANNER_RETRY]
+    sentinel scopes the malformed responses to this scenario only.
+    """
+    print("  [crew] planner natural multi-call retry (reference implementation)")
+    os.environ["CREWAI_DISABLE_TELEMETRY"] = "true"
+    os.environ["CREWAI_DISABLE_TRACKING"] = "true"
+    os.environ["CREWAI_TRACING_ENABLED"] = "false"
+    from crewai import LLM, Agent, Task
+    from crewai.utilities.planning_handler import CrewPlanner
+
+    request_model = "gpt-4o-mini"
+    system_prompt = "You are a helpful research assistant."
+    host, port = mock_server_host_port(MOCK_BASE_URL)
+    os.environ["OPENAI_API_KEY"] = "mock-key"
+    os.environ["OPENAI_API_BASE"] = MOCK_BASE_URL
+    os.environ["OPENAI_MODEL_NAME"] = request_model
+    llm = LLM(
+        model=request_model,
+        provider="openai",
+        base_url=MOCK_BASE_URL,
+        api_key="mock-key",
+    )
+
+    researcher = Agent(
+        role="Researcher",
+        goal="Find information",
+        backstory=system_prompt,
+        llm=llm,
+        verbose=False,
+        allow_delegation=False,
+    )
+
+    # The [FORCE_PLANNER_RETRY] sentinel routes the planner's first two calls
+    # through the mock's malformed branches, triggering CrewAI's natural
+    # convert_with_instructions path for a third (successful) call.
+    task = Task(
+        description=("[FORCE_PLANNER_RETRY] Research the weather forecasting techniques used by meteorologists."),
+        expected_output="A short summary of forecasting techniques.",
+        agent=researcher,
+    )
+
+    planner = CrewPlanner(tasks=[task], planning_agent_llm=llm)
+    planning_agent = planner._create_planning_agent()
+    planner._create_planning_agent = lambda: planning_agent
+
+    captured_completions: list = []
+    captured_messages_per_call: list = []
+
+    with _reference_tracer.start_as_current_span(f"plan {planning_agent.role}") as plan_span:
+        plan_span.set_attribute("gen_ai.operation.name", "plan")
+        plan_span.set_attribute("gen_ai.agent.id", str(planning_agent.id))
+        plan_span.set_attribute("gen_ai.agent.name", planning_agent.role)
+
+        # Patch BOTH beta.parse (planner's first call) and chat.completions.
+        # create (fall-through and converter calls) so we capture every LLM
+        # call under this plan span regardless of which method CrewAI routes
+        # through.
+        original_parse = llm._client.beta.chat.completions.parse
+        original_create = llm._client.chat.completions.create
+
+        def _capture_parse(*args, **kwargs):
+            captured_messages_per_call.append(kwargs.get("messages"))
+            response = original_parse(*args, **kwargs)
+            captured_completions.append(response)
+            return response
+
+        def _capture_create(*args, **kwargs):
+            captured_messages_per_call.append(kwargs.get("messages"))
+            response = original_create(*args, **kwargs)
+            captured_completions.append(response)
+            return response
+
+        llm._client.beta.chat.completions.parse = _capture_parse
+        llm._client.chat.completions.create = _capture_create
+        try:
+            result = planner._handle_crew_planning()
+        finally:
+            llm._client.beta.chat.completions.parse = original_parse
+            llm._client.chat.completions.create = original_create
+
+        for messages, completion in zip(captured_messages_per_call, captured_completions, strict=True):
+            with _reference_tracer.start_as_current_span("chat gpt-4o-mini") as chat_span:
+                chat_span.set_attribute("gen_ai.operation.name", "chat")
+                chat_span.set_attribute("gen_ai.provider.name", "openai")
+                chat_span.set_attribute("gen_ai.request.model", request_model)
+                if host:
+                    chat_span.set_attribute("server.address", host)
+                if port is not None:
+                    chat_span.set_attribute("server.port", port)
+
+                if messages is not None:
+                    system_messages = [m for m in messages if m.get("role") == "system"]
+                    user_messages = [m for m in messages if m.get("role") == "user"]
+                    if system_messages:
+                        chat_span.set_attribute(
+                            "gen_ai.system_instructions",
+                            json.dumps(
+                                [{"parts": [{"type": "text", "content": m["content"]}]} for m in system_messages]
+                            ),
+                        )
+                    if user_messages:
+                        chat_span.set_attribute(
+                            "gen_ai.input.messages",
+                            json.dumps(
+                                [
+                                    {"role": "user", "parts": [{"type": "text", "content": m["content"]}]}
+                                    for m in user_messages
+                                ]
+                            ),
+                        )
+
+                if getattr(completion, "model", None):
+                    chat_span.set_attribute("gen_ai.response.model", completion.model)
+                if getattr(completion, "id", None):
+                    chat_span.set_attribute("gen_ai.response.id", completion.id)
+                if getattr(completion, "choices", None):
+                    chat_span.set_attribute(
+                        "gen_ai.response.finish_reasons",
+                        [choice.finish_reason for choice in completion.choices if choice.finish_reason],
+                    )
+                    assistant_content = completion.choices[0].message.content
+                    if assistant_content:
+                        chat_span.set_attribute(
+                            "gen_ai.output.messages",
+                            json.dumps(
+                                [
+                                    {
+                                        "role": "assistant",
+                                        "parts": [{"type": "text", "content": assistant_content}],
+                                    }
+                                ]
+                            ),
+                        )
+                if getattr(completion, "usage", None):
+                    chat_span.set_attribute("gen_ai.usage.input_tokens", completion.usage.prompt_tokens)
+                    chat_span.set_attribute("gen_ai.usage.output_tokens", completion.usage.completion_tokens)
+
+        print(
+            f"    -> planned {len(result.list_of_plans_per_task)} task(s) "
+            f"after {len(captured_completions)} chat call(s)"
+        )
+
+
 def main():
     print("=== Reference Implementation: CrewAI Reference Implementation ===")
 
@@ -365,6 +526,7 @@ def main():
 
     run_crew()
     run_crew_planning()
+    run_crew_planning_with_native_retry()
 
     flush_and_shutdown(tp, lp, mp)
 
