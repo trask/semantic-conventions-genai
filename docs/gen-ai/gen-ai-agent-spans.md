@@ -824,6 +824,7 @@ and SHOULD be provided **at span creation time** (if provided at all):
 Represents an agent planning or task decomposition phase.
 
 The `gen_ai.operation.name` SHOULD be `plan`.
+
 **Span name** SHOULD be `plan {gen_ai.agent.name}` if `gen_ai.agent.name` is readily available.
 When `gen_ai.agent.name` is not available, it SHOULD be `plan`.
 

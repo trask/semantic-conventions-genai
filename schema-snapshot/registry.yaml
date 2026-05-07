@@ -8714,6 +8714,7 @@ refinements:
       note: gen_ai.plan.internal
     note: |
       The `gen_ai.operation.name` SHOULD be `plan`.
+
       **Span name** SHOULD be `plan {gen_ai.agent.name}` if `gen_ai.agent.name` is readily available.
       When `gen_ai.agent.name` is not available, it SHOULD be `plan`.
 
@@ -17843,6 +17844,7 @@ registry:
       note: gen_ai.plan.internal
     note: |
       The `gen_ai.operation.name` SHOULD be `plan`.
+
       **Span name** SHOULD be `plan {gen_ai.agent.name}` if `gen_ai.agent.name` is readily available.
       When `gen_ai.agent.name` is not available, it SHOULD be `plan`.
 
