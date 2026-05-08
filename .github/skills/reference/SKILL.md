@@ -1,6 +1,6 @@
 ---
 name: reference
-description: 'Use when implementing a semantic-conventions PR, upstream proposal diff, spec change, or new GenAI span or attribute in this repository. Adds reference instrumentation, reference scenario updates, inline attribute emission, and data coverage for every Python, JS, Java, and .NET library that credibly supports the change.'
+description: 'Use when implementing a semantic-conventions PR, upstream proposal diff, spec change, or new GenAI span or attribute in this repository. Adds reference instrumentation, reference scenario updates, inline attribute emission, and data coverage for every Python library that credibly supports the change.'
 argument-hint: 'Describe the semantic-conventions PR or the convention changes that need reference coverage.'
 ---
 
@@ -57,7 +57,7 @@ When editing reference tests in this repository:
 
 1. Read the semantic-conventions PR and extract the exact changed spans, attributes, requirement levels, and examples.
 2. Translate the PR into a concrete implementation worklist grouped by operation, not by prose section.
-3. Inventory the libraries in this repository that implement the affected operation across Python, JS, Java, and .NET.
+3. Inventory the Python libraries in this repository that implement the affected operation.
 4. For each library, decide whether the changed fields are credibly available from the current call boundary.
 5. Add or update the reference scenario for every supporting library.
 6. Emit the new reference attributes inline and keep them tied to current request or response values.
