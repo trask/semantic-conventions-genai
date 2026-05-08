@@ -36,15 +36,16 @@ def run_chat():
         "gen_ai.provider.name": "anthropic",
         "gen_ai.request.model": request_model,
         "gen_ai.request.max_tokens": request_max_tokens,
-        "gen_ai.input.messages": json.dumps(
-            [{"role": m["role"], "parts": [{"type": "text", "content": m["content"]}]} for m in messages]
-        ),
     }
     if host:
         span_attributes["server.address"] = host
     if port is not None:
         span_attributes["server.port"] = port
     with _reference_tracer.start_as_current_span("chat claude-sonnet-4-20250514", attributes=span_attributes) as span:
+        span.set_attribute(
+            "gen_ai.input.messages",
+            json.dumps([{"role": m["role"], "parts": [{"type": "text", "content": m["content"]}]} for m in messages]),
+        )
         resp = client.messages.create(
             model=request_model,
             max_tokens=request_max_tokens,

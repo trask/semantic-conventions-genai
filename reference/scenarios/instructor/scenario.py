@@ -25,11 +25,12 @@ def run_chat_reference(client):
         "gen_ai.operation.name": "chat",
         "gen_ai.provider.name": "openai",
         "gen_ai.request.model": request_model,
-        "gen_ai.input.messages": json.dumps(
-            [{"role": m["role"], "parts": [{"type": "text", "content": m["content"]}]} for m in messages]
-        ),
     }
     with _reference_tracer.start_as_current_span("chat gpt-4o-mini", attributes=span_attributes) as span:
+        span.set_attribute(
+            "gen_ai.input.messages",
+            json.dumps([{"role": m["role"], "parts": [{"type": "text", "content": m["content"]}]} for m in messages]),
+        )
         resp, completion = client.chat.completions.create_with_completion(
             model=request_model,
             messages=messages,
@@ -119,12 +120,13 @@ def run_chat_tool_call_reference(client):
         "gen_ai.operation.name": "chat",
         "gen_ai.provider.name": "openai",
         "gen_ai.request.model": request_model,
-        "gen_ai.tool.definitions": json.dumps(tools),
-        "gen_ai.input.messages": json.dumps(
-            [{"role": m["role"], "parts": [{"type": "text", "content": m["content"]}]} for m in messages]
-        ),
     }
     with _reference_tracer.start_as_current_span("chat gpt-4o-mini", attributes=span_attributes_2) as span:
+        span.set_attribute("gen_ai.tool.definitions", json.dumps(tools))
+        span.set_attribute(
+            "gen_ai.input.messages",
+            json.dumps([{"role": m["role"], "parts": [{"type": "text", "content": m["content"]}]} for m in messages]),
+        )
         resp, completion = client.chat.completions.create_with_completion(
             model=request_model,
             messages=messages,
@@ -159,13 +161,13 @@ def run_chat_tool_call_reference(client):
                 "gen_ai.tool.name": tool_call.function.name,
                 "gen_ai.tool.description": tools[0]["function"]["description"],
                 "gen_ai.tool.type": tools[0]["type"],
-                "gen_ai.tool.call.arguments": json.dumps(arguments),
             }
             if getattr(tool_call, "id", None):
                 tool_span_attributes["gen_ai.tool.call.id"] = tool_call.id
             with _reference_tracer.start_as_current_span(
                 "execute_tool WeatherRequest", attributes=tool_span_attributes
             ) as tool_span:
+                tool_span.set_attribute("gen_ai.tool.call.arguments", json.dumps(arguments))
                 result = get_weather(arguments.get("location", resp.location))
                 tool_span.set_attribute("gen_ai.tool.call.result", result)
             print(f"    -> tool_call: {tool_call.function.name}")

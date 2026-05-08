@@ -138,27 +138,28 @@ def run_chat_tool_call():
         "gen_ai.operation.name": "chat",
         "gen_ai.provider.name": "gcp.vertex_ai",
         "gen_ai.request.model": request_model,
-        "gen_ai.tool.definitions": json.dumps(
-            [
-                {
-                    "function_declarations": [
-                        {
-                            "name": "get_weather",
-                            "description": "Get the current weather",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "location": {"type": "string", "description": "City name"},
-                                },
-                                "required": ["location"],
-                            },
-                        }
-                    ]
-                }
-            ]
-        ),
     }
     with _reference_tracer.start_as_current_span("chat gemini-2.0-flash", attributes=span_attributes_2) as span:
+        span.set_attribute(
+            "gen_ai.tool.definitions",
+            json.dumps(
+                [
+                    {
+                        "function_declarations": [
+                            {
+                                "name": "get_weather",
+                                "description": "Get the current weather",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {"location": {"type": "string", "description": "City name"}},
+                                    "required": ["location"],
+                                },
+                            }
+                        ]
+                    }
+                ]
+            ),
+        )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)
             warnings.simplefilter("ignore", UserWarning)

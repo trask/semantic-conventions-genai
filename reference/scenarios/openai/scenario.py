@@ -53,15 +53,15 @@ def run_chat_reference(client):
         "gen_ai.request.frequency_penalty": request_frequency_penalty,
         "gen_ai.request.presence_penalty": request_presence_penalty,
         "gen_ai.request.top_p": request_top_p,
-        "gen_ai.input.messages": input_messages,
     }
     if host:
         span_attributes["server.address"] = host
     if port is not None:
         span_attributes["server.port"] = port
-    if system_instructions:
-        span_attributes["gen_ai.system_instructions"] = json.dumps(system_instructions)
     with _reference_tracer.start_as_current_span("chat gpt-4o-mini", attributes=span_attributes) as span:
+        span.set_attribute("gen_ai.input.messages", input_messages)
+        if system_instructions:
+            span.set_attribute("gen_ai.system_instructions", json.dumps(system_instructions))
         resp = client.chat.completions.create(
             model=request_model,
             messages=messages,
@@ -140,15 +140,18 @@ def run_chat_streaming_reference(client):
         "gen_ai.operation.name": "chat",
         "gen_ai.provider.name": "openai",
         "gen_ai.request.model": request_model,
-        "gen_ai.input.messages": json.dumps(
-            [{"role": m["role"], "parts": [{"type": "text", "content": m["content"]}]} for m in request_messages]
-        ),
     }
     if host:
         span_attributes_2["server.address"] = host
     if port is not None:
         span_attributes_2["server.port"] = port
     with _reference_tracer.start_as_current_span("chat gpt-4o-mini", attributes=span_attributes_2) as span:
+        span.set_attribute(
+            "gen_ai.input.messages",
+            json.dumps(
+                [{"role": m["role"], "parts": [{"type": "text", "content": m["content"]}]} for m in request_messages]
+            ),
+        )
         stream = client.chat.completions.create(
             model=request_model,
             messages=request_messages,
@@ -220,13 +223,13 @@ def run_chat_tool_call_reference(client):
         "gen_ai.operation.name": "chat",
         "gen_ai.provider.name": "openai",
         "gen_ai.request.model": request_model,
-        "gen_ai.tool.definitions": json.dumps(tools),
     }
     if host:
         span_attributes_3["server.address"] = host
     if port is not None:
         span_attributes_3["server.port"] = port
     with _reference_tracer.start_as_current_span("chat gpt-4o-mini", attributes=span_attributes_3) as span:
+        span.set_attribute("gen_ai.tool.definitions", json.dumps(tools))
         resp = client.chat.completions.create(
             model=request_model,
             messages=[{"role": "user", "content": "What's the weather in Seattle?"}],
@@ -249,11 +252,11 @@ def run_chat_tool_call_reference(client):
                 "gen_ai.tool.description": request_tool["function"]["description"],
                 "gen_ai.tool.type": request_tool["type"],
                 "gen_ai.tool.call.id": tool_call.id,
-                "gen_ai.tool.call.arguments": json.dumps(arguments),
             }
             with _reference_tracer.start_as_current_span(
                 "execute_tool get_weather", attributes=tool_span_attributes
             ) as tool_span:
+                tool_span.set_attribute("gen_ai.tool.call.arguments", json.dumps(arguments))
                 result = get_weather(arguments["location"])
                 tool_span.set_attribute("gen_ai.tool.call.result", result)
             print(f"    -> tool_call: {tool_call.function.name}")

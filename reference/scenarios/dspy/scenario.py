@@ -174,9 +174,9 @@ def run_tool_call():
         "gen_ai.operation.name": "chat",
         "gen_ai.provider.name": "openai",
         "gen_ai.request.model": request_model,
-        "gen_ai.tool.definitions": json.dumps([request_tool]),
     }
     with _reference_tracer.start_as_current_span("chat gpt-4o-mini", attributes=span_attributes_2) as span:
+        span.set_attribute("gen_ai.tool.definitions", json.dumps([request_tool]))
         result = lm(
             messages=messages,
             tools=[request_tool],

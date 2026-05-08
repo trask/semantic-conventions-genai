@@ -109,13 +109,13 @@ def run_agent_reference():
             "gen_ai.tool.name": "get_weather",
             "gen_ai.tool.type": "function",
             "gen_ai.tool.description": "Get the current weather.",
-            "gen_ai.tool.call.arguments": json.dumps({"location": location}),
         }
         if tool_context.function_call_id:
             tool_span_attributes["gen_ai.tool.call.id"] = tool_context.function_call_id
         with _reference_tracer.start_as_current_span(
             "execute_tool get_weather", attributes=tool_span_attributes
         ) as tool_span:
+            tool_span.set_attribute("gen_ai.tool.call.arguments", json.dumps({"location": location}))
             result = f"Sunny in {location}"
             tool_span.set_attribute("gen_ai.tool.call.result", result)
         return result
@@ -163,15 +163,14 @@ def run_agent_reference():
             workflow_span_attributes = {
                 "gen_ai.operation.name": "invoke_workflow",
                 "gen_ai.workflow.name": runner.app_name,
-                "gen_ai.input.messages": json.dumps(
-                    [
-                        {"role": "user", "parts": [{"type": "text", "content": input_text}]},
-                    ]
-                ),
             }
             with _reference_tracer.start_as_current_span(
                 f"invoke_workflow {runner.app_name}", attributes=workflow_span_attributes
             ) as workflow_span:
+                workflow_span.set_attribute(
+                    "gen_ai.input.messages",
+                    json.dumps([{"role": "user", "parts": [{"type": "text", "content": input_text}]}]),
+                )
                 agent_span_attributes = {
                     "gen_ai.operation.name": "invoke_agent",
                     "gen_ai.provider.name": "gcp.gemini",
@@ -186,19 +185,19 @@ def run_agent_reference():
                     "gen_ai.request.stop_sequences": request_stop_sequences,
                     "gen_ai.conversation.id": session.id,
                     "gen_ai.agent.name": agent.name,
-                    "gen_ai.system_instructions": json.dumps(
-                        [{"parts": [{"type": "text", "content": agent.instruction}]}]
-                    ),
-                    "gen_ai.input.messages": json.dumps(
-                        [
-                            {"role": "user", "parts": [{"type": "text", "content": input_text}]},
-                        ]
-                    ),
-                    "gen_ai.tool.definitions": json.dumps(tool_defs),
                 }
                 with _reference_tracer.start_as_current_span(
                     "invoke_agent test_agent", attributes=agent_span_attributes
                 ) as agent_span:
+                    agent_span.set_attribute(
+                        "gen_ai.system_instructions",
+                        json.dumps([{"parts": [{"type": "text", "content": agent.instruction}]}]),
+                    )
+                    agent_span.set_attribute(
+                        "gen_ai.input.messages",
+                        json.dumps([{"role": "user", "parts": [{"type": "text", "content": input_text}]}]),
+                    )
+                    agent_span.set_attribute("gen_ai.tool.definitions", json.dumps(tool_defs))
                     span_attributes = {
                         "gen_ai.operation.name": "chat",
                         "gen_ai.provider.name": "gcp.gemini",
@@ -212,15 +211,6 @@ def run_agent_reference():
                         "gen_ai.request.frequency_penalty": request_frequency_penalty,
                         "gen_ai.request.presence_penalty": request_presence_penalty,
                         "gen_ai.request.stop_sequences": request_stop_sequences,
-                        "gen_ai.system_instructions": json.dumps(
-                            [{"parts": [{"type": "text", "content": agent.instruction}]}]
-                        ),
-                        "gen_ai.input.messages": json.dumps(
-                            [
-                                {"role": "user", "parts": [{"type": "text", "content": input_text}]},
-                            ]
-                        ),
-                        "gen_ai.tool.definitions": json.dumps(tool_defs),
                     }
                     if host:
                         span_attributes["server.address"] = host
@@ -229,6 +219,15 @@ def run_agent_reference():
                     with _reference_tracer.start_as_current_span(
                         "chat gemini-2.0-flash", attributes=span_attributes
                     ) as span:
+                        span.set_attribute(
+                            "gen_ai.system_instructions",
+                            json.dumps([{"parts": [{"type": "text", "content": agent.instruction}]}]),
+                        )
+                        span.set_attribute(
+                            "gen_ai.input.messages",
+                            json.dumps([{"role": "user", "parts": [{"type": "text", "content": input_text}]}]),
+                        )
+                        span.set_attribute("gen_ai.tool.definitions", json.dumps(tool_defs))
                         usage_metadata = None
                         finish_reason = None
                         last_text = ""

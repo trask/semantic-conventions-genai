@@ -29,13 +29,16 @@ def run_chat_reference(llm, request_model, request_temperature, request_choice_c
         "gen_ai.request.model": request_model,
         "gen_ai.request.choice.count": request_choice_count,
         "gen_ai.request.temperature": request_temperature,
-        "gen_ai.input.messages": json.dumps([{"role": "user", "parts": [{"type": "text", "content": user_content}]}]),
     }
     if host:
         span_attributes["server.address"] = host
     if port is not None:
         span_attributes["server.port"] = port
     with _reference_tracer.start_as_current_span("chat gpt-4o-mini", attributes=span_attributes) as span:
+        span.set_attribute(
+            "gen_ai.input.messages",
+            json.dumps([{"role": "user", "parts": [{"type": "text", "content": user_content}]}]),
+        )
         resp = llm.chat([ChatMessage(role=MessageRole.USER, content=user_content)])
         raw = getattr(resp, "raw", None)
         if raw:
@@ -163,13 +166,13 @@ def run_agent_reference(llm, request_model, request_temperature):
             "gen_ai.tool.name": "get_weather",
             "gen_ai.tool.description": get_weather.__doc__ or "",
             "gen_ai.tool.type": "function",
-            "gen_ai.tool.call.arguments": json.dumps({"location": location}),
         }
         if current_tool_call_id:
             tool_span_attributes["gen_ai.tool.call.id"] = current_tool_call_id
         with _reference_tracer.start_as_current_span(
             "execute_tool get_weather", attributes=tool_span_attributes
         ) as tool_span:
+            tool_span.set_attribute("gen_ai.tool.call.arguments", json.dumps({"location": location}))
             result = "Sunny, 72°F"
             tool_span.set_attribute("gen_ai.tool.call.result", result)
             return result
@@ -203,9 +206,9 @@ def run_agent_reference(llm, request_model, request_temperature):
         "gen_ai.provider.name": "openai",
         "gen_ai.request.model": request_model,
         "gen_ai.request.temperature": request_temperature,
-        "gen_ai.tool.definitions": json.dumps([tool_definition]),
     }
-    with _reference_tracer.start_as_current_span("chat gpt-4o-mini", attributes=span_attributes_3):
+    with _reference_tracer.start_as_current_span("chat gpt-4o-mini", attributes=span_attributes_3) as span:
+        span.set_attribute("gen_ai.tool.definitions", json.dumps([tool_definition]))
         try:
             tool_calling.call_tool_with_selection = _capture_call_tool_with_selection
             response = llm.predict_and_call(

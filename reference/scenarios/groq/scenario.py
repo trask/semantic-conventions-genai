@@ -74,11 +74,14 @@ def run_chat_streaming_reference(client):
         "gen_ai.operation.name": "chat",
         "gen_ai.provider.name": "groq",
         "gen_ai.request.model": request_model,
-        "gen_ai.input.messages": json.dumps(
-            [{"role": m["role"], "parts": [{"type": "text", "content": m["content"]}]} for m in request_messages]
-        ),
     }
     with _reference_tracer.start_as_current_span("chat llama-3.1-8b-instant", attributes=span_attributes_2) as span:
+        span.set_attribute(
+            "gen_ai.input.messages",
+            json.dumps(
+                [{"role": m["role"], "parts": [{"type": "text", "content": m["content"]}]} for m in request_messages]
+            ),
+        )
         stream = client.chat.completions.create(
             model=request_model,
             messages=request_messages,
@@ -127,9 +130,9 @@ def run_chat_tool_call_reference(client):
         "gen_ai.operation.name": "chat",
         "gen_ai.provider.name": "groq",
         "gen_ai.request.model": request_model,
-        "gen_ai.tool.definitions": json.dumps(tools),
     }
     with _reference_tracer.start_as_current_span("chat llama-3.1-8b-instant", attributes=span_attributes_3) as span:
+        span.set_attribute("gen_ai.tool.definitions", json.dumps(tools))
         resp = client.chat.completions.create(
             model=request_model,
             messages=[{"role": "user", "content": "What's the weather in Seattle?"}],
@@ -152,11 +155,11 @@ def run_chat_tool_call_reference(client):
                 "gen_ai.tool.description": request_tool["function"]["description"],
                 "gen_ai.tool.type": request_tool["type"],
                 "gen_ai.tool.call.id": tool_call.id,
-                "gen_ai.tool.call.arguments": json.dumps(arguments),
             }
             with _reference_tracer.start_as_current_span(
                 "execute_tool get_weather", attributes=tool_span_attributes
             ) as tool_span:
+                tool_span.set_attribute("gen_ai.tool.call.arguments", json.dumps(arguments))
                 result = f"Sunny in {arguments.get('location', 'unknown')}"
                 tool_span.set_attribute("gen_ai.tool.call.result", result)
             print(f"    -> tool_call: {tool_call.function.name}")

@@ -66,15 +66,11 @@ def run_invoke_agent(client):
         "gen_ai.agent.description": assistant_description,
         "server.address": _SERVER_ADDRESS,
         "server.port": _SERVER_PORT,
-        "gen_ai.system_instructions": json.dumps(
-            [
-                {
-                    "parts": [{"type": "text", "content": assistant_instructions}],
-                }
-            ]
-        ),
     }
     with tracer.start_as_current_span("create_agent", kind=SpanKind.CLIENT, attributes=span_attributes) as span:
+        span.set_attribute(
+            "gen_ai.system_instructions", json.dumps([{"parts": [{"type": "text", "content": assistant_instructions}]}])
+        )
         assistant = client.beta.assistants.create(
             model=request_model,
             name=assistant_name,
@@ -106,29 +102,22 @@ def run_invoke_agent(client):
         "gen_ai.request.top_p": request_top_p,
         "gen_ai.request.max_tokens": request_max_tokens,
         "gen_ai.conversation.id": thread.id,
-        "gen_ai.input.messages": json.dumps(
-            [
-                {
-                    "role": "user",
-                    "parts": [{"type": "text", "content": user_message}],
-                }
-            ]
-        ),
-        "gen_ai.tool.definitions": json.dumps(tool_defs),
         "server.address": _SERVER_ADDRESS,
         "server.port": _SERVER_PORT,
     }
     if assistant.description:
         span_attributes_2["gen_ai.agent.description"] = assistant.description
-    if getattr(assistant, "instructions", None):
-        span_attributes_2["gen_ai.system_instructions"] = json.dumps(
-            [
-                {
-                    "parts": [{"type": "text", "content": assistant.instructions}],
-                }
-            ]
-        )
     with tracer.start_as_current_span("invoke_agent", kind=SpanKind.CLIENT, attributes=span_attributes_2) as span:
+        span.set_attribute(
+            "gen_ai.input.messages",
+            json.dumps([{"role": "user", "parts": [{"type": "text", "content": user_message}]}]),
+        )
+        span.set_attribute("gen_ai.tool.definitions", json.dumps(tool_defs))
+        if getattr(assistant, "instructions", None):
+            span.set_attribute(
+                "gen_ai.system_instructions",
+                json.dumps([{"parts": [{"type": "text", "content": assistant.instructions}]}]),
+            )
         try:
             run = client.beta.threads.runs.create(
                 thread_id=thread.id,
@@ -165,13 +154,13 @@ def run_invoke_agent(client):
                         "gen_ai.tool.name": tool_name,
                         "gen_ai.tool.description": (tool_definition or {}).get("function", {}).get("description", ""),
                         "gen_ai.tool.type": "function",
-                        "gen_ai.tool.call.arguments": json.dumps(arguments),
                     }
                     if tool_call_id:
                         tool_span_attributes["gen_ai.tool.call.id"] = tool_call_id
                     with tracer.start_as_current_span(
                         "execute_tool", kind=SpanKind.CLIENT, attributes=tool_span_attributes
                     ) as tool_span:
+                        tool_span.set_attribute("gen_ai.tool.call.arguments", json.dumps(arguments))
                         result = get_weather(arguments["location"])
                         tool_span.set_attribute("gen_ai.tool.call.result", result)
 

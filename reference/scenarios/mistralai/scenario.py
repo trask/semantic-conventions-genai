@@ -40,15 +40,16 @@ def run_chat(client):
         "gen_ai.operation.name": "chat",
         "gen_ai.provider.name": "mistral_ai",
         "gen_ai.request.model": request_model,
-        "gen_ai.input.messages": json.dumps(
-            [{"role": m["role"], "parts": [{"type": "text", "content": m["content"]}]} for m in messages]
-        ),
     }
     if host:
         span_attributes["server.address"] = host
     if port is not None:
         span_attributes["server.port"] = port
     with _reference_tracer.start_as_current_span("chat mistral-large-latest", attributes=span_attributes) as span:
+        span.set_attribute(
+            "gen_ai.input.messages",
+            json.dumps([{"role": m["role"], "parts": [{"type": "text", "content": m["content"]}]} for m in messages]),
+        )
         resp = client.chat.complete(
             model=request_model,
             messages=messages,
@@ -126,16 +127,17 @@ def run_chat_tool_call(client):
         "gen_ai.operation.name": "chat",
         "gen_ai.provider.name": "mistral_ai",
         "gen_ai.request.model": request_model,
-        "gen_ai.tool.definitions": json.dumps(tools),
-        "gen_ai.input.messages": json.dumps(
-            [{"role": m["role"], "parts": [{"type": "text", "content": m["content"]}]} for m in messages]
-        ),
     }
     if host:
         span_attributes_2["server.address"] = host
     if port is not None:
         span_attributes_2["server.port"] = port
     with _reference_tracer.start_as_current_span("chat mistral-large-latest", attributes=span_attributes_2) as span:
+        span.set_attribute("gen_ai.tool.definitions", json.dumps(tools))
+        span.set_attribute(
+            "gen_ai.input.messages",
+            json.dumps([{"role": m["role"], "parts": [{"type": "text", "content": m["content"]}]} for m in messages]),
+        )
         resp = client.chat.complete(
             model=request_model,
             messages=messages,
@@ -163,11 +165,11 @@ def run_chat_tool_call(client):
                 "gen_ai.tool.description": request_tool["function"]["description"],
                 "gen_ai.tool.type": request_tool["type"],
                 "gen_ai.tool.call.id": tool_call.id,
-                "gen_ai.tool.call.arguments": json.dumps(arguments),
             }
             with _reference_tracer.start_as_current_span(
                 "execute_tool get_weather", attributes=tool_span_attributes
             ) as tool_span:
+                tool_span.set_attribute("gen_ai.tool.call.arguments", json.dumps(arguments))
                 result = f"Sunny in {arguments.get('location', 'unknown')}"
                 tool_span.set_attribute("gen_ai.tool.call.result", result)
             print(f"    -> tool_call: {tool_call.function.name}")
@@ -185,15 +187,16 @@ def run_chat_streaming(client):
         "gen_ai.operation.name": "chat",
         "gen_ai.provider.name": "mistral_ai",
         "gen_ai.request.model": request_model,
-        "gen_ai.input.messages": json.dumps(
-            [{"role": m["role"], "parts": [{"type": "text", "content": m["content"]}]} for m in messages]
-        ),
     }
     if host:
         span_attributes_3["server.address"] = host
     if port is not None:
         span_attributes_3["server.port"] = port
     with _reference_tracer.start_as_current_span("chat mistral-large-latest", attributes=span_attributes_3) as span:
+        span.set_attribute(
+            "gen_ai.input.messages",
+            json.dumps([{"role": m["role"], "parts": [{"type": "text", "content": m["content"]}]} for m in messages]),
+        )
         text = ""
         response_model = None
         response_id = None

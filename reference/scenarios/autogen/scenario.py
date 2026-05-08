@@ -49,13 +49,13 @@ def run_agent_reference():
             "gen_ai.tool.name": "get_weather",
             "gen_ai.tool.description": get_weather.__doc__ or "",
             "gen_ai.tool.type": "function",
-            "gen_ai.tool.call.arguments": json.dumps({"location": location}),
         }
         if tool_call_id:
             tool_span_attributes["gen_ai.tool.call.id"] = tool_call_id
         with _reference_tracer.start_as_current_span(
             "execute_tool get_weather", attributes=tool_span_attributes
         ) as tool_span:
+            tool_span.set_attribute("gen_ai.tool.call.arguments", json.dumps({"location": location}))
             result = f"Sunny in {location}"
             tool_span.set_attribute("gen_ai.tool.call.result", result)
             return result
@@ -118,13 +118,15 @@ def run_agent_reference():
             "gen_ai.request.model": request_model,
             "gen_ai.agent.name": agent_name,
             "gen_ai.agent.description": agent_description,
-            "gen_ai.system_instructions": json.dumps([{"parts": [{"type": "text", "content": system_message}]}]),
         }
         if host:
             span_attributes_2["server.address"] = host
         if port is not None:
             span_attributes_2["server.port"] = port
         with _reference_tracer.start_as_current_span("create_agent test_agent", attributes=span_attributes_2) as span:
+            span.set_attribute(
+                "gen_ai.system_instructions", json.dumps([{"parts": [{"type": "text", "content": system_message}]}])
+            )
             agent = AssistantAgent(
                 name=agent_name,
                 model_client=model_client,
@@ -154,17 +156,18 @@ def run_agent_reference():
                 "gen_ai.request.stop_sequences": request_stop_sequences,
                 "gen_ai.request.frequency_penalty": request_frequency_penalty,
                 "gen_ai.request.presence_penalty": request_presence_penalty,
-                "gen_ai.system_instructions": json.dumps([{"parts": [{"type": "text", "content": system_message}]}]),
-                "gen_ai.input.messages": json.dumps(
-                    [
-                        {"role": "user", "parts": [{"type": "text", "content": input_text}]},
-                    ]
-                ),
-                "gen_ai.tool.definitions": json.dumps(tool_defs),
             }
             with _reference_tracer.start_as_current_span(
                 "invoke_agent test_agent", attributes=agent_span_attributes
             ) as agent_span:
+                agent_span.set_attribute(
+                    "gen_ai.system_instructions", json.dumps([{"parts": [{"type": "text", "content": system_message}]}])
+                )
+                agent_span.set_attribute(
+                    "gen_ai.input.messages",
+                    json.dumps([{"role": "user", "parts": [{"type": "text", "content": input_text}]}]),
+                )
+                agent_span.set_attribute("gen_ai.tool.definitions", json.dumps(tool_defs))
                 host, port = mock_server_host_port(MOCK_BASE_URL)
                 span_attributes_3 = {
                     "gen_ai.operation.name": "chat",
@@ -177,21 +180,21 @@ def run_agent_reference():
                     "gen_ai.request.stop_sequences": request_stop_sequences,
                     "gen_ai.request.frequency_penalty": request_frequency_penalty,
                     "gen_ai.request.presence_penalty": request_presence_penalty,
-                    "gen_ai.system_instructions": json.dumps(
-                        [{"parts": [{"type": "text", "content": system_message}]}]
-                    ),
-                    "gen_ai.input.messages": json.dumps(
-                        [
-                            {"role": "user", "parts": [{"type": "text", "content": input_text}]},
-                        ]
-                    ),
-                    "gen_ai.tool.definitions": json.dumps(tool_defs),
                 }
                 if host:
                     span_attributes_3["server.address"] = host
                 if port is not None:
                     span_attributes_3["server.port"] = port
                 with _reference_tracer.start_as_current_span("chat gpt-4o-mini", attributes=span_attributes_3) as span:
+                    span.set_attribute(
+                        "gen_ai.system_instructions",
+                        json.dumps([{"parts": [{"type": "text", "content": system_message}]}]),
+                    )
+                    span.set_attribute(
+                        "gen_ai.input.messages",
+                        json.dumps([{"role": "user", "parts": [{"type": "text", "content": input_text}]}]),
+                    )
+                    span.set_attribute("gen_ai.tool.definitions", json.dumps(tool_defs))
                     original_create = model_client.create
 
                     async def _capture_create(messages, **kwargs):
@@ -311,13 +314,13 @@ def run_chat_tool_call_reference():
         "gen_ai.operation.name": "chat",
         "gen_ai.provider.name": "openai",
         "gen_ai.request.model": request_model,
-        "gen_ai.tool.definitions": json.dumps(tools),
     }
     if host:
         span_attributes["server.address"] = host
     if port is not None:
         span_attributes["server.port"] = port
     with _reference_tracer.start_as_current_span("chat gpt-4o-mini", attributes=span_attributes) as span:
+        span.set_attribute("gen_ai.tool.definitions", json.dumps(tools))
         resp = client.chat.completions.create(
             model=request_model,
             messages=[{"role": "user", "content": "What's the weather in Seattle?"}],

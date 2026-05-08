@@ -114,24 +114,27 @@ def run_chat_tool_call_reference(client):
         "gen_ai.operation.name": "chat",
         "gen_ai.provider.name": "azure.ai.inference",
         "gen_ai.request.model": request_model,
-        "gen_ai.tool.definitions": json.dumps(
-            [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": tool.function.name,
-                        "description": tool.function.description,
-                        "parameters": tool.function.parameters,
-                    },
-                }
-            ]
-        ),
     }
     if host:
         span_attributes_2["server.address"] = host
     if port is not None:
         span_attributes_2["server.port"] = port
     with _reference_tracer.start_as_current_span("chat gpt-4o-mini", attributes=span_attributes_2) as span:
+        span.set_attribute(
+            "gen_ai.tool.definitions",
+            json.dumps(
+                [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": tool.function.name,
+                            "description": tool.function.description,
+                            "parameters": tool.function.parameters,
+                        },
+                    }
+                ]
+            ),
+        )
         resp = client.complete(
             model=request_model,
             messages=[UserMessage(content="What's the weather in Seattle?")],
