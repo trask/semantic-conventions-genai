@@ -161,14 +161,14 @@ def run_chat_tool_call(client):
             arguments = json.loads(arguments_json)
             tool_span_attributes = {
                 "gen_ai.operation.name": "execute_tool",
-                "gen_ai.tool.name": tool_call.function.name,
-                "gen_ai.tool.description": request_tool["function"]["description"],
-                "gen_ai.tool.type": request_tool["type"],
-                "gen_ai.tool.call.id": tool_call.id,
             }
             with _reference_tracer.start_as_current_span(
                 "execute_tool get_weather", attributes=tool_span_attributes
             ) as tool_span:
+                tool_span.set_attribute("gen_ai.tool.name", tool_call.function.name)
+                tool_span.set_attribute("gen_ai.tool.description", request_tool["function"]["description"])
+                tool_span.set_attribute("gen_ai.tool.type", request_tool["type"])
+                tool_span.set_attribute("gen_ai.tool.call.id", tool_call.id)
                 tool_span.set_attribute("gen_ai.tool.call.arguments", json.dumps(arguments))
                 result = f"Sunny in {arguments.get('location', 'unknown')}"
                 tool_span.set_attribute("gen_ai.tool.call.result", result)

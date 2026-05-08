@@ -62,12 +62,12 @@ def run_invoke_agent(client):
         "gen_ai.operation.name": "create_agent",
         "gen_ai.provider.name": "openai",
         "gen_ai.request.model": request_model,
-        "gen_ai.agent.name": assistant_name,
-        "gen_ai.agent.description": assistant_description,
         "server.address": _SERVER_ADDRESS,
         "server.port": _SERVER_PORT,
     }
     with tracer.start_as_current_span("create_agent", kind=SpanKind.CLIENT, attributes=span_attributes) as span:
+        span.set_attribute("gen_ai.agent.name", assistant_name)
+        span.set_attribute("gen_ai.agent.description", assistant_description)
         span.set_attribute(
             "gen_ai.system_instructions", json.dumps([{"parts": [{"type": "text", "content": assistant_instructions}]}])
         )
@@ -95,19 +95,19 @@ def run_invoke_agent(client):
     span_attributes_2 = {
         "gen_ai.operation.name": "invoke_agent",
         "gen_ai.provider.name": "openai",
-        "gen_ai.agent.id": assistant.id,
-        "gen_ai.agent.name": assistant.name or "",
         "gen_ai.request.model": request_model,
-        "gen_ai.request.temperature": request_temperature,
-        "gen_ai.request.top_p": request_top_p,
-        "gen_ai.request.max_tokens": request_max_tokens,
-        "gen_ai.conversation.id": thread.id,
         "server.address": _SERVER_ADDRESS,
         "server.port": _SERVER_PORT,
     }
-    if assistant.description:
-        span_attributes_2["gen_ai.agent.description"] = assistant.description
     with tracer.start_as_current_span("invoke_agent", kind=SpanKind.CLIENT, attributes=span_attributes_2) as span:
+        span.set_attribute("gen_ai.agent.id", assistant.id)
+        span.set_attribute("gen_ai.agent.name", assistant.name or "")
+        span.set_attribute("gen_ai.request.temperature", request_temperature)
+        span.set_attribute("gen_ai.request.top_p", request_top_p)
+        span.set_attribute("gen_ai.request.max_tokens", request_max_tokens)
+        span.set_attribute("gen_ai.conversation.id", thread.id)
+        if assistant.description:
+            span.set_attribute("gen_ai.agent.description", assistant.description)
         span.set_attribute(
             "gen_ai.input.messages",
             json.dumps([{"role": "user", "parts": [{"type": "text", "content": user_message}]}]),
@@ -151,15 +151,17 @@ def run_invoke_agent(client):
 
                     tool_span_attributes = {
                         "gen_ai.operation.name": "execute_tool",
-                        "gen_ai.tool.name": tool_name,
-                        "gen_ai.tool.description": (tool_definition or {}).get("function", {}).get("description", ""),
-                        "gen_ai.tool.type": "function",
                     }
-                    if tool_call_id:
-                        tool_span_attributes["gen_ai.tool.call.id"] = tool_call_id
                     with tracer.start_as_current_span(
                         "execute_tool", kind=SpanKind.CLIENT, attributes=tool_span_attributes
                     ) as tool_span:
+                        tool_span.set_attribute("gen_ai.tool.name", tool_name)
+                        tool_span.set_attribute(
+                            "gen_ai.tool.description", (tool_definition or {}).get("function", {}).get("description", "")
+                        )
+                        tool_span.set_attribute("gen_ai.tool.type", "function")
+                        if tool_call_id:
+                            tool_span.set_attribute("gen_ai.tool.call.id", tool_call_id)
                         tool_span.set_attribute("gen_ai.tool.call.arguments", json.dumps(arguments))
                         result = get_weather(arguments["location"])
                         tool_span.set_attribute("gen_ai.tool.call.result", result)

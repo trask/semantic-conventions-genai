@@ -174,14 +174,14 @@ def run_converse_tool_call_reference(client):
             tool_use = content[0]["toolUse"]
             tool_span_attributes = {
                 "gen_ai.operation.name": "execute_tool",
-                "gen_ai.tool.name": tool_use["name"],
-                "gen_ai.tool.description": tool_spec["toolSpec"]["description"],
-                "gen_ai.tool.type": "function",
-                "gen_ai.tool.call.id": tool_use["toolUseId"],
             }
             with _reference_tracer.start_as_current_span(
                 "execute_tool get_weather", attributes=tool_span_attributes
             ) as tool_span:
+                tool_span.set_attribute("gen_ai.tool.name", tool_use["name"])
+                tool_span.set_attribute("gen_ai.tool.description", tool_spec["toolSpec"]["description"])
+                tool_span.set_attribute("gen_ai.tool.type", "function")
+                tool_span.set_attribute("gen_ai.tool.call.id", tool_use["toolUseId"])
                 tool_span.set_attribute("gen_ai.tool.call.arguments", json.dumps(tool_use.get("input", {})))
                 result = f"Sunny in {tool_use.get('input', {}).get('location', 'unknown')}"
                 tool_span.set_attribute("gen_ai.tool.call.result", result)

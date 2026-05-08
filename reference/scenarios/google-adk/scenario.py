@@ -106,15 +106,15 @@ def run_agent_reference():
         """Get the current weather."""
         tool_span_attributes = {
             "gen_ai.operation.name": "execute_tool",
-            "gen_ai.tool.name": "get_weather",
-            "gen_ai.tool.type": "function",
-            "gen_ai.tool.description": "Get the current weather.",
         }
-        if tool_context.function_call_id:
-            tool_span_attributes["gen_ai.tool.call.id"] = tool_context.function_call_id
         with _reference_tracer.start_as_current_span(
             "execute_tool get_weather", attributes=tool_span_attributes
         ) as tool_span:
+            tool_span.set_attribute("gen_ai.tool.name", "get_weather")
+            tool_span.set_attribute("gen_ai.tool.type", "function")
+            tool_span.set_attribute("gen_ai.tool.description", "Get the current weather.")
+            if tool_context.function_call_id:
+                tool_span.set_attribute("gen_ai.tool.call.id", tool_context.function_call_id)
             tool_span.set_attribute("gen_ai.tool.call.arguments", json.dumps({"location": location}))
             result = f"Sunny in {location}"
             tool_span.set_attribute("gen_ai.tool.call.result", result)
@@ -162,11 +162,11 @@ def run_agent_reference():
             )
             workflow_span_attributes = {
                 "gen_ai.operation.name": "invoke_workflow",
-                "gen_ai.workflow.name": runner.app_name,
             }
             with _reference_tracer.start_as_current_span(
                 f"invoke_workflow {runner.app_name}", attributes=workflow_span_attributes
             ) as workflow_span:
+                workflow_span.set_attribute("gen_ai.workflow.name", runner.app_name)
                 workflow_span.set_attribute(
                     "gen_ai.input.messages",
                     json.dumps([{"role": "user", "parts": [{"type": "text", "content": input_text}]}]),
@@ -175,20 +175,20 @@ def run_agent_reference():
                     "gen_ai.operation.name": "invoke_agent",
                     "gen_ai.provider.name": "gcp.gemini",
                     "gen_ai.request.model": request_model,
-                    "gen_ai.request.choice.count": request_choice_count,
-                    "gen_ai.request.max_tokens": request_max_tokens,
-                    "gen_ai.request.temperature": request_temperature,
-                    "gen_ai.request.top_p": request_top_p,
-                    "gen_ai.request.top_k": float(request_top_k),
-                    "gen_ai.request.frequency_penalty": request_frequency_penalty,
-                    "gen_ai.request.presence_penalty": request_presence_penalty,
-                    "gen_ai.request.stop_sequences": request_stop_sequences,
-                    "gen_ai.conversation.id": session.id,
-                    "gen_ai.agent.name": agent.name,
                 }
                 with _reference_tracer.start_as_current_span(
                     "invoke_agent test_agent", attributes=agent_span_attributes
                 ) as agent_span:
+                    agent_span.set_attribute("gen_ai.request.choice.count", request_choice_count)
+                    agent_span.set_attribute("gen_ai.request.max_tokens", request_max_tokens)
+                    agent_span.set_attribute("gen_ai.request.temperature", request_temperature)
+                    agent_span.set_attribute("gen_ai.request.top_p", request_top_p)
+                    agent_span.set_attribute("gen_ai.request.top_k", float(request_top_k))
+                    agent_span.set_attribute("gen_ai.request.frequency_penalty", request_frequency_penalty)
+                    agent_span.set_attribute("gen_ai.request.presence_penalty", request_presence_penalty)
+                    agent_span.set_attribute("gen_ai.request.stop_sequences", request_stop_sequences)
+                    agent_span.set_attribute("gen_ai.conversation.id", session.id)
+                    agent_span.set_attribute("gen_ai.agent.name", agent.name)
                     agent_span.set_attribute(
                         "gen_ai.system_instructions",
                         json.dumps([{"parts": [{"type": "text", "content": agent.instruction}]}]),
@@ -201,16 +201,7 @@ def run_agent_reference():
                     span_attributes = {
                         "gen_ai.operation.name": "chat",
                         "gen_ai.provider.name": "gcp.gemini",
-                        "gen_ai.conversation.id": session.id,
                         "gen_ai.request.model": request_model,
-                        "gen_ai.request.choice.count": request_choice_count,
-                        "gen_ai.request.max_tokens": request_max_tokens,
-                        "gen_ai.request.temperature": request_temperature,
-                        "gen_ai.request.top_p": request_top_p,
-                        "gen_ai.request.top_k": float(request_top_k),
-                        "gen_ai.request.frequency_penalty": request_frequency_penalty,
-                        "gen_ai.request.presence_penalty": request_presence_penalty,
-                        "gen_ai.request.stop_sequences": request_stop_sequences,
                     }
                     if host:
                         span_attributes["server.address"] = host
@@ -219,6 +210,15 @@ def run_agent_reference():
                     with _reference_tracer.start_as_current_span(
                         "chat gemini-2.0-flash", attributes=span_attributes
                     ) as span:
+                        span.set_attribute("gen_ai.conversation.id", session.id)
+                        span.set_attribute("gen_ai.request.choice.count", request_choice_count)
+                        span.set_attribute("gen_ai.request.max_tokens", request_max_tokens)
+                        span.set_attribute("gen_ai.request.temperature", request_temperature)
+                        span.set_attribute("gen_ai.request.top_p", request_top_p)
+                        span.set_attribute("gen_ai.request.top_k", float(request_top_k))
+                        span.set_attribute("gen_ai.request.frequency_penalty", request_frequency_penalty)
+                        span.set_attribute("gen_ai.request.presence_penalty", request_presence_penalty)
+                        span.set_attribute("gen_ai.request.stop_sequences", request_stop_sequences)
                         span.set_attribute(
                             "gen_ai.system_instructions",
                             json.dumps([{"parts": [{"type": "text", "content": agent.instruction}]}]),

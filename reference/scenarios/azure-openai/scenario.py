@@ -48,7 +48,6 @@ def run_embeddings_reference(client):
         "gen_ai.operation.name": "embeddings",
         "gen_ai.provider.name": "azure.openai",
         "gen_ai.request.model": request_model,
-        "gen_ai.request.encoding_formats": [request_encoding_format],
     }
     if host:
         span_attributes_2["server.address"] = host
@@ -57,6 +56,7 @@ def run_embeddings_reference(client):
     with _reference_tracer.start_as_current_span(
         "embeddings text-embedding-3-small", attributes=span_attributes_2
     ) as span:
+        span.set_attribute("gen_ai.request.encoding_formats", [request_encoding_format])
         resp = client.embeddings.create(
             model=request_model,
             input="Hello, world!",

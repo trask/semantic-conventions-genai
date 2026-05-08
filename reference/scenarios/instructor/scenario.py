@@ -158,15 +158,15 @@ def run_chat_tool_call_reference(client):
             arguments = json.loads(arguments_json)
             tool_span_attributes = {
                 "gen_ai.operation.name": "execute_tool",
-                "gen_ai.tool.name": tool_call.function.name,
-                "gen_ai.tool.description": tools[0]["function"]["description"],
-                "gen_ai.tool.type": tools[0]["type"],
             }
-            if getattr(tool_call, "id", None):
-                tool_span_attributes["gen_ai.tool.call.id"] = tool_call.id
             with _reference_tracer.start_as_current_span(
                 "execute_tool WeatherRequest", attributes=tool_span_attributes
             ) as tool_span:
+                tool_span.set_attribute("gen_ai.tool.name", tool_call.function.name)
+                tool_span.set_attribute("gen_ai.tool.description", tools[0]["function"]["description"])
+                tool_span.set_attribute("gen_ai.tool.type", tools[0]["type"])
+                if getattr(tool_call, "id", None):
+                    tool_span.set_attribute("gen_ai.tool.call.id", tool_call.id)
                 tool_span.set_attribute("gen_ai.tool.call.arguments", json.dumps(arguments))
                 result = get_weather(arguments.get("location", resp.location))
                 tool_span.set_attribute("gen_ai.tool.call.result", result)

@@ -27,14 +27,14 @@ def run_chat_reference(llm, request_model, request_temperature, request_choice_c
         "gen_ai.operation.name": "chat",
         "gen_ai.provider.name": "openai",
         "gen_ai.request.model": request_model,
-        "gen_ai.request.choice.count": request_choice_count,
-        "gen_ai.request.temperature": request_temperature,
     }
     if host:
         span_attributes["server.address"] = host
     if port is not None:
         span_attributes["server.port"] = port
     with _reference_tracer.start_as_current_span("chat gpt-4o-mini", attributes=span_attributes) as span:
+        span.set_attribute("gen_ai.request.choice.count", request_choice_count)
+        span.set_attribute("gen_ai.request.temperature", request_temperature)
         span.set_attribute(
             "gen_ai.input.messages",
             json.dumps([{"role": "user", "parts": [{"type": "text", "content": user_content}]}]),
@@ -115,13 +115,13 @@ def run_chat_streaming_reference(llm, request_model, request_temperature):
         "gen_ai.operation.name": "chat",
         "gen_ai.provider.name": "openai",
         "gen_ai.request.model": request_model,
-        "gen_ai.request.temperature": request_temperature,
     }
     if host:
         span_attributes_2["server.address"] = host
     if port is not None:
         span_attributes_2["server.port"] = port
     with _reference_tracer.start_as_current_span("chat gpt-4o-mini", attributes=span_attributes_2) as span:
+        span.set_attribute("gen_ai.request.temperature", request_temperature)
         text = ""
         finish_reasons = []
         stream_resp = llm.stream_chat([ChatMessage(role=MessageRole.USER, content="Tell me a joke.")])
@@ -163,15 +163,15 @@ def run_agent_reference(llm, request_model, request_temperature):
         """Get the current weather for a location."""
         tool_span_attributes = {
             "gen_ai.operation.name": "execute_tool",
-            "gen_ai.tool.name": "get_weather",
-            "gen_ai.tool.description": get_weather.__doc__ or "",
-            "gen_ai.tool.type": "function",
         }
-        if current_tool_call_id:
-            tool_span_attributes["gen_ai.tool.call.id"] = current_tool_call_id
         with _reference_tracer.start_as_current_span(
             "execute_tool get_weather", attributes=tool_span_attributes
         ) as tool_span:
+            tool_span.set_attribute("gen_ai.tool.name", "get_weather")
+            tool_span.set_attribute("gen_ai.tool.description", get_weather.__doc__ or "")
+            tool_span.set_attribute("gen_ai.tool.type", "function")
+            if current_tool_call_id:
+                tool_span.set_attribute("gen_ai.tool.call.id", current_tool_call_id)
             tool_span.set_attribute("gen_ai.tool.call.arguments", json.dumps({"location": location}))
             result = "Sunny, 72°F"
             tool_span.set_attribute("gen_ai.tool.call.result", result)
@@ -205,9 +205,9 @@ def run_agent_reference(llm, request_model, request_temperature):
         "gen_ai.operation.name": "chat",
         "gen_ai.provider.name": "openai",
         "gen_ai.request.model": request_model,
-        "gen_ai.request.temperature": request_temperature,
     }
     with _reference_tracer.start_as_current_span("chat gpt-4o-mini", attributes=span_attributes_3) as span:
+        span.set_attribute("gen_ai.request.temperature", request_temperature)
         span.set_attribute("gen_ai.tool.definitions", json.dumps([tool_definition]))
         try:
             tool_calling.call_tool_with_selection = _capture_call_tool_with_selection
@@ -249,7 +249,6 @@ def run_embeddings_reference():
         "gen_ai.operation.name": "embeddings",
         "gen_ai.provider.name": "openai",
         "gen_ai.request.model": request_model,
-        "gen_ai.request.encoding_formats": [request_encoding_format],
     }
     if host:
         span_attributes_4["server.address"] = host
@@ -258,6 +257,7 @@ def run_embeddings_reference():
     with _reference_tracer.start_as_current_span(
         "embeddings text-embedding-3-small", attributes=span_attributes_4
     ) as span:
+        span.set_attribute("gen_ai.request.encoding_formats", [request_encoding_format])
         try:
             openai_embedding_base.get_embedding = _capture_get_embedding
             result = embed_model.get_text_embedding("Hello, world!")
@@ -294,21 +294,17 @@ def run_retrieval_reference():
     retriever = index.as_retriever(similarity_top_k=int(request_top_k))
     query_text = "Seattle weather"
 
-    span_attributes_5 = {
-        "gen_ai.operation.name": "retrieval",
-        "gen_ai.data_source.id": data_source_id,
-        "gen_ai.provider.name": "openai",
-        "gen_ai.request.model": request_model,
-        "gen_ai.request.top_k": request_top_k,
-        "gen_ai.retrieval.query.text": query_text,
-    }
-    if host:
-        span_attributes_5["server.address"] = host
-    if port is not None:
-        span_attributes_5["server.port"] = port
-    with _reference_tracer.start_as_current_span(
-        "retrieval weather-knowledge-base", attributes=span_attributes_5
-    ) as span:
+    with _reference_tracer.start_as_current_span("retrieval weather-knowledge-base") as span:
+        span.set_attribute("gen_ai.operation.name", "retrieval")
+        span.set_attribute("gen_ai.data_source.id", data_source_id)
+        span.set_attribute("gen_ai.provider.name", "openai")
+        span.set_attribute("gen_ai.request.model", request_model)
+        span.set_attribute("gen_ai.request.top_k", request_top_k)
+        span.set_attribute("gen_ai.retrieval.query.text", query_text)
+        if host:
+            span.set_attribute("server.address", host)
+        if port is not None:
+            span.set_attribute("server.port", port)
         nodes = retriever.retrieve(query_text)
         span.set_attribute(
             "gen_ai.retrieval.documents",

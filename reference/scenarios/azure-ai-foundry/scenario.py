@@ -73,12 +73,12 @@ def run_invoke_agent(client):
         "gen_ai.operation.name": "create_agent",
         "gen_ai.provider.name": "azure.ai.openai",
         "gen_ai.request.model": AGENT_MODEL,
-        "gen_ai.agent.name": AGENT_NAME,
-        "gen_ai.agent.description": AGENT_DESCRIPTION,
         "server.address": _SERVER_ADDRESS,
         "server.port": _SERVER_PORT,
     }
     with tracer.start_as_current_span("create_agent", kind=SpanKind.CLIENT, attributes=span_attributes) as span:
+        span.set_attribute("gen_ai.agent.name", AGENT_NAME)
+        span.set_attribute("gen_ai.agent.description", AGENT_DESCRIPTION)
         span.set_attribute("gen_ai.system_instructions", json.dumps([{"type": "text", "content": AGENT_INSTRUCTIONS}]))
         span.set_attribute("gen_ai.tool.definitions", json.dumps(tool_defs))
         agent = client.agents.create_version(
@@ -101,13 +101,13 @@ def run_invoke_agent(client):
         "gen_ai.operation.name": "invoke_agent",
         "gen_ai.provider.name": "azure.ai.openai",
         "gen_ai.request.model": AGENT_MODEL,
-        "gen_ai.request.max_tokens": REQUEST_MAX_TOKENS,
-        "gen_ai.request.temperature": REQUEST_TEMPERATURE,
-        "gen_ai.request.top_p": REQUEST_TOP_P,
         "server.address": _SERVER_ADDRESS,
         "server.port": _SERVER_PORT,
     }
     with tracer.start_as_current_span("invoke_agent", kind=SpanKind.CLIENT, attributes=span_attributes_2) as span:
+        span.set_attribute("gen_ai.request.max_tokens", REQUEST_MAX_TOKENS)
+        span.set_attribute("gen_ai.request.temperature", REQUEST_TEMPERATURE)
+        span.set_attribute("gen_ai.request.top_p", REQUEST_TOP_P)
         span.set_attribute("gen_ai.system_instructions", json.dumps([{"type": "text", "content": AGENT_INSTRUCTIONS}]))
         span.set_attribute(
             "gen_ai.input.messages", json.dumps([{"role": "user", "parts": [{"type": "text", "content": USER_INPUT}]}])

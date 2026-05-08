@@ -45,20 +45,20 @@ def run_chat_reference(client):
         "gen_ai.operation.name": "chat",
         "gen_ai.provider.name": "openai",
         "gen_ai.request.model": request_model,
-        "gen_ai.request.choice.count": request_choice_count,
-        "gen_ai.request.max_tokens": request_max_tokens,
-        "gen_ai.request.temperature": request_temperature,
-        "gen_ai.request.seed": request_seed,
-        "gen_ai.request.stop_sequences": request_stop_sequences,
-        "gen_ai.request.frequency_penalty": request_frequency_penalty,
-        "gen_ai.request.presence_penalty": request_presence_penalty,
-        "gen_ai.request.top_p": request_top_p,
     }
     if host:
         span_attributes["server.address"] = host
     if port is not None:
         span_attributes["server.port"] = port
     with _reference_tracer.start_as_current_span("chat gpt-4o-mini", attributes=span_attributes) as span:
+        span.set_attribute("gen_ai.request.choice.count", request_choice_count)
+        span.set_attribute("gen_ai.request.max_tokens", request_max_tokens)
+        span.set_attribute("gen_ai.request.temperature", request_temperature)
+        span.set_attribute("gen_ai.request.seed", request_seed)
+        span.set_attribute("gen_ai.request.stop_sequences", request_stop_sequences)
+        span.set_attribute("gen_ai.request.frequency_penalty", request_frequency_penalty)
+        span.set_attribute("gen_ai.request.presence_penalty", request_presence_penalty)
+        span.set_attribute("gen_ai.request.top_p", request_top_p)
         span.set_attribute("gen_ai.input.messages", input_messages)
         if system_instructions:
             span.set_attribute("gen_ai.system_instructions", json.dumps(system_instructions))
@@ -248,14 +248,14 @@ def run_chat_tool_call_reference(client):
             arguments = json.loads(arguments_json)
             tool_span_attributes = {
                 "gen_ai.operation.name": "execute_tool",
-                "gen_ai.tool.name": tool_call.function.name,
-                "gen_ai.tool.description": request_tool["function"]["description"],
-                "gen_ai.tool.type": request_tool["type"],
-                "gen_ai.tool.call.id": tool_call.id,
             }
             with _reference_tracer.start_as_current_span(
                 "execute_tool get_weather", attributes=tool_span_attributes
             ) as tool_span:
+                tool_span.set_attribute("gen_ai.tool.name", tool_call.function.name)
+                tool_span.set_attribute("gen_ai.tool.description", request_tool["function"]["description"])
+                tool_span.set_attribute("gen_ai.tool.type", request_tool["type"])
+                tool_span.set_attribute("gen_ai.tool.call.id", tool_call.id)
                 tool_span.set_attribute("gen_ai.tool.call.arguments", json.dumps(arguments))
                 result = get_weather(arguments["location"])
                 tool_span.set_attribute("gen_ai.tool.call.result", result)
@@ -274,7 +274,6 @@ def run_embeddings_reference(client):
         "gen_ai.operation.name": "embeddings",
         "gen_ai.provider.name": "openai",
         "gen_ai.request.model": request_model,
-        "gen_ai.request.encoding_formats": [request_encoding_format],
     }
     if host:
         span_attributes_4["server.address"] = host
@@ -283,6 +282,7 @@ def run_embeddings_reference(client):
     with _reference_tracer.start_as_current_span(
         "embeddings text-embedding-3-small", attributes=span_attributes_4
     ) as span:
+        span.set_attribute("gen_ai.request.encoding_formats", [request_encoding_format])
         resp = client.embeddings.create(
             model=request_model,
             input="Hello, world!",

@@ -42,11 +42,11 @@ If the value would have to be guessed, carried forward from an unrelated call, o
 
 When editing reference tests in this repository:
 
-- Open the span **around** the SDK call, not after it. Put simple request-side attributes that are already in hand before the call in the span-start `attributes` / `tags` argument so samplers can see them. Then invoke the library inside the `with` block and set response attributes from the returned object inside the same `with` block. Do not capture a completion and replay attribute emission against it after the span has closed or against a separately-opened span.
+- Open the span **around** the SDK call, not after it. Put available `sampling_relevant` request attributes in the span-start `attributes` / `tags` argument. Then invoke the library inside the `with` block and set response attributes from the returned object inside the same `with` block. Do not capture a completion and replay attribute emission against it after the span has closed or against a separately-opened span.
 - When the library's public entry point does not expose the operation directly (for example, an internal-only span boundary inside a library helper), it is acceptable to patch the library's private methods to open spans around them. The scenario itself must still invoke the **public** API. Do not call private methods directly from the scenario.
 - Emit attributes inline at the span or activity site.
 - Keep request, derived, and response attributes close together.
-- Treat simple and complex attributes differently. Do not delay simple sampler-visible request attributes with `span.set_attribute` / `activity.SetTag` when their values are already available at span or activity creation time. This includes operation name, provider, request model and scalar request parameters, server address/port, and simple agent/workflow identity values. Emit complex request attributes after the span/activity has started, for example input messages, system instructions, tool definitions, or tool call arguments. Keep response values, generated IDs, token usage, output messages, retrieval results, and tool results after the operation that produces them.
+- Emit non-`sampling_relevant` request attributes inline after the span/activity has started. Keep response values, generated IDs, token usage, output messages, retrieval results, and tool results after the operation that produces them.
 - Reuse the same current-call variable that the SDK call uses when emitting request attributes.
 - Read response values from the current response or streamed result object.
 - Avoid helpers that hide emitted attributes.
