@@ -157,7 +157,8 @@ def run_invoke_agent(client):
                     ) as tool_span:
                         tool_span.set_attribute("gen_ai.tool.name", tool_name)
                         tool_span.set_attribute(
-                            "gen_ai.tool.description", (tool_definition or {}).get("function", {}).get("description", "")
+                            "gen_ai.tool.description",
+                            (tool_definition or {}).get("function", {}).get("description", ""),
                         )
                         tool_span.set_attribute("gen_ai.tool.type", "function")
                         if tool_call_id:
