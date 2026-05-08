@@ -43,18 +43,19 @@ def run_agent_reference():
 
     async def get_weather(location: str) -> str:
         """Get the current weather."""
-        with _reference_tracer.start_as_current_span("execute_tool get_weather") as tool_span:
-            tool_span.set_attribute("gen_ai.operation.name", "execute_tool")
-            tool_span.set_attribute("gen_ai.tool.name", "get_weather")
-            tool_span.set_attribute("gen_ai.tool.description", get_weather.__doc__ or "")
-            tool_span.set_attribute("gen_ai.tool.type", "function")
-            tool_call_id = _current_tool_call_id.get()
-            if tool_call_id:
-                tool_span.set_attribute("gen_ai.tool.call.id", tool_call_id)
-            tool_span.set_attribute(
-                "gen_ai.tool.call.arguments",
-                json.dumps({"location": location}),
-            )
+        tool_call_id = _current_tool_call_id.get()
+        tool_span_attributes = {
+            "gen_ai.operation.name": "execute_tool",
+            "gen_ai.tool.name": "get_weather",
+            "gen_ai.tool.description": get_weather.__doc__ or "",
+            "gen_ai.tool.type": "function",
+            "gen_ai.tool.call.arguments": json.dumps({"location": location}),
+        }
+        if tool_call_id:
+            tool_span_attributes["gen_ai.tool.call.id"] = tool_call_id
+        with _reference_tracer.start_as_current_span(
+            "execute_tool get_weather", attributes=tool_span_attributes
+        ) as tool_span:
             result = f"Sunny in {location}"
             tool_span.set_attribute("gen_ai.tool.call.result", result)
             return result
@@ -108,29 +109,30 @@ def run_agent_reference():
     _tool_base.trace_tool_span = _capture_tool_call_id
 
     try:
-        with _reference_tracer.start_as_current_span("create_agent test_agent") as span:
-            host, port = mock_server_host_port(MOCK_BASE_URL)
-            span.set_attribute("gen_ai.operation.name", "create_agent")
-            span.set_attribute("gen_ai.provider.name", "openai")
-            span.set_attribute("gen_ai.request.model", request_model)
+        agent_name = "test_agent"
+        agent_description = "Reference AutoGen assistant."
+        host, port = mock_server_host_port(MOCK_BASE_URL)
+        span_attributes_2 = {
+            "gen_ai.operation.name": "create_agent",
+            "gen_ai.provider.name": "openai",
+            "gen_ai.request.model": request_model,
+            "gen_ai.agent.name": agent_name,
+            "gen_ai.agent.description": agent_description,
+            "gen_ai.system_instructions": json.dumps([{"parts": [{"type": "text", "content": system_message}]}]),
+        }
+        if host:
+            span_attributes_2["server.address"] = host
+        if port is not None:
+            span_attributes_2["server.port"] = port
+        with _reference_tracer.start_as_current_span("create_agent test_agent", attributes=span_attributes_2) as span:
             agent = AssistantAgent(
-                name="test_agent",
+                name=agent_name,
                 model_client=model_client,
-                description="Reference AutoGen assistant.",
+                description=agent_description,
                 system_message=system_message,
                 tools=[get_weather],
                 max_tool_iterations=2,
             )
-            span.set_attribute("gen_ai.agent.name", agent.name)
-            span.set_attribute("gen_ai.agent.description", agent.description)
-            span.set_attribute(
-                "gen_ai.system_instructions",
-                json.dumps([{"parts": [{"type": "text", "content": system_message}]}]),
-            )
-            if host:
-                span.set_attribute("server.address", host)
-            if port is not None:
-                span.set_attribute("server.port", port)
             agent_id = getattr(agent, "id", None)
             if agent_id:
                 span.set_attribute("gen_ai.agent.id", str(agent_id))
@@ -139,62 +141,57 @@ def run_agent_reference():
             from autogen_agentchat.messages import TextMessage
             from autogen_core import CancellationToken
 
-            with _reference_tracer.start_as_current_span("invoke_agent test_agent") as agent_span:
-                agent_span.set_attribute("gen_ai.operation.name", "invoke_agent")
-                agent_span.set_attribute("gen_ai.provider.name", "openai")
-                agent_span.set_attribute("gen_ai.request.model", request_model)
-                agent_span.set_attribute("gen_ai.agent.name", agent.name)
-                agent_span.set_attribute("gen_ai.agent.description", agent.description)
-                agent_span.set_attribute("gen_ai.request.seed", request_seed)
-                agent_span.set_attribute("gen_ai.request.max_tokens", request_max_tokens)
-                agent_span.set_attribute("gen_ai.request.temperature", request_temperature)
-                agent_span.set_attribute("gen_ai.request.top_p", request_top_p)
-                agent_span.set_attribute("gen_ai.request.stop_sequences", request_stop_sequences)
-                agent_span.set_attribute("gen_ai.request.frequency_penalty", request_frequency_penalty)
-                agent_span.set_attribute("gen_ai.request.presence_penalty", request_presence_penalty)
-                agent_span.set_attribute(
-                    "gen_ai.system_instructions",
-                    json.dumps([{"parts": [{"type": "text", "content": system_message}]}]),
-                )
-                agent_span.set_attribute(
-                    "gen_ai.input.messages",
-                    json.dumps(
+            agent_span_attributes = {
+                "gen_ai.operation.name": "invoke_agent",
+                "gen_ai.provider.name": "openai",
+                "gen_ai.request.model": request_model,
+                "gen_ai.agent.name": agent.name,
+                "gen_ai.agent.description": agent.description,
+                "gen_ai.request.seed": request_seed,
+                "gen_ai.request.max_tokens": request_max_tokens,
+                "gen_ai.request.temperature": request_temperature,
+                "gen_ai.request.top_p": request_top_p,
+                "gen_ai.request.stop_sequences": request_stop_sequences,
+                "gen_ai.request.frequency_penalty": request_frequency_penalty,
+                "gen_ai.request.presence_penalty": request_presence_penalty,
+                "gen_ai.system_instructions": json.dumps([{"parts": [{"type": "text", "content": system_message}]}]),
+                "gen_ai.input.messages": json.dumps(
+                    [
+                        {"role": "user", "parts": [{"type": "text", "content": input_text}]},
+                    ]
+                ),
+                "gen_ai.tool.definitions": json.dumps(tool_defs),
+            }
+            with _reference_tracer.start_as_current_span(
+                "invoke_agent test_agent", attributes=agent_span_attributes
+            ) as agent_span:
+                host, port = mock_server_host_port(MOCK_BASE_URL)
+                span_attributes_3 = {
+                    "gen_ai.operation.name": "chat",
+                    "gen_ai.provider.name": "openai",
+                    "gen_ai.request.model": request_model,
+                    "gen_ai.request.seed": request_seed,
+                    "gen_ai.request.max_tokens": request_max_tokens,
+                    "gen_ai.request.temperature": request_temperature,
+                    "gen_ai.request.top_p": request_top_p,
+                    "gen_ai.request.stop_sequences": request_stop_sequences,
+                    "gen_ai.request.frequency_penalty": request_frequency_penalty,
+                    "gen_ai.request.presence_penalty": request_presence_penalty,
+                    "gen_ai.system_instructions": json.dumps(
+                        [{"parts": [{"type": "text", "content": system_message}]}]
+                    ),
+                    "gen_ai.input.messages": json.dumps(
                         [
                             {"role": "user", "parts": [{"type": "text", "content": input_text}]},
                         ]
                     ),
-                )
-                agent_span.set_attribute("gen_ai.tool.definitions", json.dumps(tool_defs))
-
-                with _reference_tracer.start_as_current_span("chat gpt-4o-mini") as span:
-                    host, port = mock_server_host_port(MOCK_BASE_URL)
-                    span.set_attribute("gen_ai.operation.name", "chat")
-                    span.set_attribute("gen_ai.provider.name", "openai")
-                    span.set_attribute("gen_ai.request.model", request_model)
-                    span.set_attribute("gen_ai.request.seed", request_seed)
-                    span.set_attribute("gen_ai.request.max_tokens", request_max_tokens)
-                    span.set_attribute("gen_ai.request.temperature", request_temperature)
-                    span.set_attribute("gen_ai.request.top_p", request_top_p)
-                    span.set_attribute("gen_ai.request.stop_sequences", request_stop_sequences)
-                    span.set_attribute("gen_ai.request.frequency_penalty", request_frequency_penalty)
-                    span.set_attribute("gen_ai.request.presence_penalty", request_presence_penalty)
-                    span.set_attribute(
-                        "gen_ai.system_instructions",
-                        json.dumps([{"parts": [{"type": "text", "content": system_message}]}]),
-                    )
-                    span.set_attribute(
-                        "gen_ai.input.messages",
-                        json.dumps(
-                            [
-                                {"role": "user", "parts": [{"type": "text", "content": input_text}]},
-                            ]
-                        ),
-                    )
-                    span.set_attribute("gen_ai.tool.definitions", json.dumps(tool_defs))
-                    if host:
-                        span.set_attribute("server.address", host)
-                    if port is not None:
-                        span.set_attribute("server.port", port)
+                    "gen_ai.tool.definitions": json.dumps(tool_defs),
+                }
+                if host:
+                    span_attributes_3["server.address"] = host
+                if port is not None:
+                    span_attributes_3["server.port"] = port
+                with _reference_tracer.start_as_current_span("chat gpt-4o-mini", attributes=span_attributes_3) as span:
                     original_create = model_client.create
 
                     async def _capture_create(messages, **kwargs):
@@ -309,16 +306,18 @@ def run_chat_tool_call_reference():
     tools = [request_tool]
 
     client = openai.OpenAI(base_url=MOCK_BASE_URL, api_key="mock-key")
-    with _reference_tracer.start_as_current_span("chat gpt-4o-mini") as span:
-        host, port = mock_server_host_port(MOCK_BASE_URL)
-        span.set_attribute("gen_ai.operation.name", "chat")
-        span.set_attribute("gen_ai.provider.name", "openai")
-        span.set_attribute("gen_ai.request.model", request_model)
-        span.set_attribute("gen_ai.tool.definitions", json.dumps(tools))
-        if host:
-            span.set_attribute("server.address", host)
-        if port is not None:
-            span.set_attribute("server.port", port)
+    host, port = mock_server_host_port(MOCK_BASE_URL)
+    span_attributes = {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": request_model,
+        "gen_ai.tool.definitions": json.dumps(tools),
+    }
+    if host:
+        span_attributes["server.address"] = host
+    if port is not None:
+        span_attributes["server.port"] = port
+    with _reference_tracer.start_as_current_span("chat gpt-4o-mini", attributes=span_attributes) as span:
         resp = client.chat.completions.create(
             model=request_model,
             messages=[{"role": "user", "content": "What's the weather in Seattle?"}],

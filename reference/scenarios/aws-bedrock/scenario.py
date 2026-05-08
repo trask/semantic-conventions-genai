@@ -39,21 +39,22 @@ def run_converse_reference(client):
             "content": [{"text": "Say hello."}],
         }
     ]
-    with _reference_tracer.start_as_current_span("chat anthropic.claude-3-haiku-20240307-v1:0") as span:
-        host, port = mock_server_host_port(MOCK_BASE_URL)
-        span.set_attribute("gen_ai.operation.name", "chat")
-        span.set_attribute("gen_ai.provider.name", "aws.bedrock")
-        span.set_attribute("gen_ai.request.model", request_model)
-        if host:
-            span.set_attribute("server.address", host)
-        if port is not None:
-            span.set_attribute("server.port", port)
-        span.set_attribute(
-            "gen_ai.input.messages",
-            json.dumps(
-                [{"role": m["role"], "parts": [{"type": "text", "content": m["content"][0]["text"]}]} for m in messages]
-            ),
-        )
+    host, port = mock_server_host_port(MOCK_BASE_URL)
+    span_attributes = {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "aws.bedrock",
+        "gen_ai.request.model": request_model,
+        "gen_ai.input.messages": json.dumps(
+            [{"role": m["role"], "parts": [{"type": "text", "content": m["content"][0]["text"]}]} for m in messages]
+        ),
+    }
+    if host:
+        span_attributes["server.address"] = host
+    if port is not None:
+        span_attributes["server.port"] = port
+    with _reference_tracer.start_as_current_span(
+        "chat anthropic.claude-3-haiku-20240307-v1:0", attributes=span_attributes
+    ) as span:
         response = client.converse(
             modelId=request_model,
             messages=messages,
@@ -132,16 +133,20 @@ def run_converse_tool_call_reference(client):
         }
     }
     tool_config = {"tools": [tool_spec]}
-    with _reference_tracer.start_as_current_span("chat anthropic.claude-3-haiku-20240307-v1:0") as span:
-        host, port = mock_server_host_port(MOCK_BASE_URL)
-        span.set_attribute("gen_ai.operation.name", "chat")
-        span.set_attribute("gen_ai.provider.name", "aws.bedrock")
-        span.set_attribute("gen_ai.request.model", request_model)
-        span.set_attribute("gen_ai.tool.definitions", json.dumps(tool_config["tools"]))
-        if host:
-            span.set_attribute("server.address", host)
-        if port is not None:
-            span.set_attribute("server.port", port)
+    host, port = mock_server_host_port(MOCK_BASE_URL)
+    span_attributes_2 = {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "aws.bedrock",
+        "gen_ai.request.model": request_model,
+        "gen_ai.tool.definitions": json.dumps(tool_config["tools"]),
+    }
+    if host:
+        span_attributes_2["server.address"] = host
+    if port is not None:
+        span_attributes_2["server.port"] = port
+    with _reference_tracer.start_as_current_span(
+        "chat anthropic.claude-3-haiku-20240307-v1:0", attributes=span_attributes_2
+    ) as span:
         messages = [
             {
                 "role": "user",
@@ -164,13 +169,17 @@ def run_converse_tool_call_reference(client):
         content = response["output"]["message"]["content"]
         if content and "toolUse" in content[0]:
             tool_use = content[0]["toolUse"]
-            with _reference_tracer.start_as_current_span("execute_tool get_weather") as tool_span:
-                tool_span.set_attribute("gen_ai.operation.name", "execute_tool")
-                tool_span.set_attribute("gen_ai.tool.name", tool_use["name"])
-                tool_span.set_attribute("gen_ai.tool.description", tool_spec["toolSpec"]["description"])
-                tool_span.set_attribute("gen_ai.tool.type", "function")
-                tool_span.set_attribute("gen_ai.tool.call.id", tool_use["toolUseId"])
-                tool_span.set_attribute("gen_ai.tool.call.arguments", json.dumps(tool_use.get("input", {})))
+            tool_span_attributes = {
+                "gen_ai.operation.name": "execute_tool",
+                "gen_ai.tool.name": tool_use["name"],
+                "gen_ai.tool.description": tool_spec["toolSpec"]["description"],
+                "gen_ai.tool.type": "function",
+                "gen_ai.tool.call.id": tool_use["toolUseId"],
+                "gen_ai.tool.call.arguments": json.dumps(tool_use.get("input", {})),
+            }
+            with _reference_tracer.start_as_current_span(
+                "execute_tool get_weather", attributes=tool_span_attributes
+            ) as tool_span:
                 result = f"Sunny in {tool_use.get('input', {}).get('location', 'unknown')}"
                 tool_span.set_attribute("gen_ai.tool.call.result", result)
             print(f"    -> tool_call: {tool_use['name']}")
@@ -184,15 +193,19 @@ def run_embeddings_reference(client):
 
     print("  [embeddings] Bedrock Titan Embeddings (reference implementation)")
     request_model = "amazon.titan-embed-text-v2:0"
-    with _reference_tracer.start_as_current_span("embeddings amazon.titan-embed-text-v2:0") as span:
-        host, port = mock_server_host_port(MOCK_BASE_URL)
-        span.set_attribute("gen_ai.operation.name", "embeddings")
-        span.set_attribute("gen_ai.provider.name", "aws.bedrock")
-        span.set_attribute("gen_ai.request.model", request_model)
-        if host:
-            span.set_attribute("server.address", host)
-        if port is not None:
-            span.set_attribute("server.port", port)
+    host, port = mock_server_host_port(MOCK_BASE_URL)
+    span_attributes_3 = {
+        "gen_ai.operation.name": "embeddings",
+        "gen_ai.provider.name": "aws.bedrock",
+        "gen_ai.request.model": request_model,
+    }
+    if host:
+        span_attributes_3["server.address"] = host
+    if port is not None:
+        span_attributes_3["server.port"] = port
+    with _reference_tracer.start_as_current_span(
+        "embeddings amazon.titan-embed-text-v2:0", attributes=span_attributes_3
+    ) as span:
         response = client.invoke_model(
             modelId=request_model,
             contentType="application/json",

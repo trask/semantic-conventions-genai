@@ -14,10 +14,12 @@ def run_chat_reference(client):
     """Scenario: basic chat completion with reference implementation."""
     print("  [chat] basic chat completion (reference implementation)")
     request_model = "llama-3.1-8b-instant"
-    with _reference_tracer.start_as_current_span("chat llama-3.1-8b-instant") as span:
-        span.set_attribute("gen_ai.operation.name", "chat")
-        span.set_attribute("gen_ai.provider.name", "groq")
-        span.set_attribute("gen_ai.request.model", request_model)
+    span_attributes = {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "groq",
+        "gen_ai.request.model": request_model,
+    }
+    with _reference_tracer.start_as_current_span("chat llama-3.1-8b-instant", attributes=span_attributes) as span:
         messages = [{"role": "user", "content": "Say hello."}]
         resp = client.chat.completions.create(
             model=request_model,
@@ -68,16 +70,15 @@ def run_chat_streaming_reference(client):
     print("  [chat_streaming] streaming chat completion (reference implementation)")
     request_model = "llama-3.1-8b-instant"
     request_messages = [{"role": "user", "content": "Tell me a joke."}]
-    with _reference_tracer.start_as_current_span("chat llama-3.1-8b-instant") as span:
-        span.set_attribute("gen_ai.operation.name", "chat")
-        span.set_attribute("gen_ai.provider.name", "groq")
-        span.set_attribute("gen_ai.request.model", request_model)
-        span.set_attribute(
-            "gen_ai.input.messages",
-            json.dumps(
-                [{"role": m["role"], "parts": [{"type": "text", "content": m["content"]}]} for m in request_messages]
-            ),
-        )
+    span_attributes_2 = {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "groq",
+        "gen_ai.request.model": request_model,
+        "gen_ai.input.messages": json.dumps(
+            [{"role": m["role"], "parts": [{"type": "text", "content": m["content"]}]} for m in request_messages]
+        ),
+    }
+    with _reference_tracer.start_as_current_span("chat llama-3.1-8b-instant", attributes=span_attributes_2) as span:
         stream = client.chat.completions.create(
             model=request_model,
             messages=request_messages,
@@ -122,11 +123,13 @@ def run_chat_tool_call_reference(client):
         },
     }
     tools = [request_tool]
-    with _reference_tracer.start_as_current_span("chat llama-3.1-8b-instant") as span:
-        span.set_attribute("gen_ai.operation.name", "chat")
-        span.set_attribute("gen_ai.provider.name", "groq")
-        span.set_attribute("gen_ai.request.model", request_model)
-        span.set_attribute("gen_ai.tool.definitions", json.dumps(tools))
+    span_attributes_3 = {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "groq",
+        "gen_ai.request.model": request_model,
+        "gen_ai.tool.definitions": json.dumps(tools),
+    }
+    with _reference_tracer.start_as_current_span("chat llama-3.1-8b-instant", attributes=span_attributes_3) as span:
         resp = client.chat.completions.create(
             model=request_model,
             messages=[{"role": "user", "content": "What's the weather in Seattle?"}],
@@ -143,13 +146,17 @@ def run_chat_tool_call_reference(client):
             tool_call = choice.message.tool_calls[0]
             arguments_json = tool_call.function.arguments or "{}"
             arguments = json.loads(arguments_json)
-            with _reference_tracer.start_as_current_span("execute_tool get_weather") as tool_span:
-                tool_span.set_attribute("gen_ai.operation.name", "execute_tool")
-                tool_span.set_attribute("gen_ai.tool.name", tool_call.function.name)
-                tool_span.set_attribute("gen_ai.tool.description", request_tool["function"]["description"])
-                tool_span.set_attribute("gen_ai.tool.type", request_tool["type"])
-                tool_span.set_attribute("gen_ai.tool.call.id", tool_call.id)
-                tool_span.set_attribute("gen_ai.tool.call.arguments", json.dumps(arguments))
+            tool_span_attributes = {
+                "gen_ai.operation.name": "execute_tool",
+                "gen_ai.tool.name": tool_call.function.name,
+                "gen_ai.tool.description": request_tool["function"]["description"],
+                "gen_ai.tool.type": request_tool["type"],
+                "gen_ai.tool.call.id": tool_call.id,
+                "gen_ai.tool.call.arguments": json.dumps(arguments),
+            }
+            with _reference_tracer.start_as_current_span(
+                "execute_tool get_weather", attributes=tool_span_attributes
+            ) as tool_span:
                 result = f"Sunny in {arguments.get('location', 'unknown')}"
                 tool_span.set_attribute("gen_ai.tool.call.result", result)
             print(f"    -> tool_call: {tool_call.function.name}")

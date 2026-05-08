@@ -33,11 +33,15 @@ def run_retrieval():
     )
     retriever = InMemoryBM25Retriever(document_store=document_store, top_k=top_k)
 
-    with _reference_tracer.start_as_current_span("retrieval weather-knowledge-base") as span:
-        span.set_attribute("gen_ai.operation.name", "retrieval")
-        span.set_attribute("gen_ai.data_source.id", data_source_id)
-        span.set_attribute("gen_ai.request.top_k", request_top_k)
-        span.set_attribute("gen_ai.retrieval.query.text", query_text)
+    span_attributes = {
+        "gen_ai.operation.name": "retrieval",
+        "gen_ai.data_source.id": data_source_id,
+        "gen_ai.request.top_k": request_top_k,
+        "gen_ai.retrieval.query.text": query_text,
+    }
+    with _reference_tracer.start_as_current_span(
+        "retrieval weather-knowledge-base", attributes=span_attributes
+    ) as span:
         result = retriever.run(query=query_text)
         documents = result["documents"]
         span.set_attribute(

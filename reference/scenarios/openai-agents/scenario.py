@@ -25,16 +25,17 @@ async def run_agent():
     @function_tool
     def get_weather(ctx: ToolContext[None], location: str) -> str:
         """Get the current weather for a location."""
-        with _reference_tracer.start_as_current_span("execute_tool get_weather") as tool_span:
-            tool_span.set_attribute("gen_ai.operation.name", "execute_tool")
-            tool_span.set_attribute("gen_ai.tool.name", "get_weather")
-            tool_span.set_attribute("gen_ai.tool.description", get_weather.description)
-            tool_span.set_attribute("gen_ai.tool.type", "function")
-            tool_span.set_attribute("gen_ai.tool.call.id", ctx.tool_call_id)
-            tool_span.set_attribute(
-                "gen_ai.tool.call.arguments",
-                json.dumps({"location": location}),
-            )
+        tool_span_attributes = {
+            "gen_ai.operation.name": "execute_tool",
+            "gen_ai.tool.name": "get_weather",
+            "gen_ai.tool.description": get_weather.description,
+            "gen_ai.tool.type": "function",
+            "gen_ai.tool.call.id": ctx.tool_call_id,
+            "gen_ai.tool.call.arguments": json.dumps({"location": location}),
+        }
+        with _reference_tracer.start_as_current_span(
+            "execute_tool get_weather", attributes=tool_span_attributes
+        ) as tool_span:
             result = "Sunny, 72°F"
             tool_span.set_attribute("gen_ai.tool.call.result", result)
             return result
@@ -55,30 +56,44 @@ async def run_agent():
     input_text = "What's the weather in Seattle?"
 
     print("  [agent_run] agent with tool calling (reference implementation)")
-    with _reference_tracer.start_as_current_span("invoke_agent test-agent") as agent_span:
-        agent_span.set_attribute("gen_ai.operation.name", "invoke_agent")
-        agent_span.set_attribute("gen_ai.provider.name", "openai")
-        agent_span.set_attribute("gen_ai.request.model", request_model)
-        agent_span.set_attribute("gen_ai.agent.name", agent.name)
-        if host:
-            agent_span.set_attribute("server.address", host)
-        if port is not None:
-            agent_span.set_attribute("server.port", port)
-        agent_span.set_attribute(
-            "gen_ai.system_instructions",
-            json.dumps([{"parts": [{"type": "text", "content": agent.instructions}]}]),
-        )
-        agent_span.set_attribute(
-            "gen_ai.input.messages",
-            json.dumps(
-                [
-                    {"role": "user", "parts": [{"type": "text", "content": input_text}]},
-                ]
-            ),
-        )
-        agent_span.set_attribute(
-            "gen_ai.tool.definitions",
-            json.dumps(
+    agent_span_attributes = {
+        "gen_ai.operation.name": "invoke_agent",
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": request_model,
+        "gen_ai.agent.name": agent.name,
+        "gen_ai.system_instructions": json.dumps([{"parts": [{"type": "text", "content": agent.instructions}]}]),
+        "gen_ai.input.messages": json.dumps(
+            [
+                {"role": "user", "parts": [{"type": "text", "content": input_text}]},
+            ]
+        ),
+        "gen_ai.tool.definitions": json.dumps(
+            [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.params_json_schema,
+                    },
+                }
+                for t in tools
+                if isinstance(t, FunctionTool)
+            ]
+        ),
+    }
+    if host:
+        agent_span_attributes["server.address"] = host
+    if port is not None:
+        agent_span_attributes["server.port"] = port
+    with _reference_tracer.start_as_current_span(
+        "invoke_agent test-agent", attributes=agent_span_attributes
+    ) as agent_span:
+        span_attributes = {
+            "gen_ai.operation.name": "chat",
+            "gen_ai.provider.name": "openai",
+            "gen_ai.request.model": request_model,
+            "gen_ai.tool.definitions": json.dumps(
                 [
                     {
                         "type": "function",
@@ -92,33 +107,12 @@ async def run_agent():
                     if isinstance(t, FunctionTool)
                 ]
             ),
-        )
-
-        with _reference_tracer.start_as_current_span("chat gpt-4o-mini") as span:
-            span.set_attribute("gen_ai.operation.name", "chat")
-            span.set_attribute("gen_ai.provider.name", "openai")
-            span.set_attribute("gen_ai.request.model", request_model)
-            span.set_attribute(
-                "gen_ai.tool.definitions",
-                json.dumps(
-                    [
-                        {
-                            "type": "function",
-                            "function": {
-                                "name": t.name,
-                                "description": t.description,
-                                "parameters": t.params_json_schema,
-                            },
-                        }
-                        for t in tools
-                        if isinstance(t, FunctionTool)
-                    ]
-                ),
-            )
-            if host:
-                span.set_attribute("server.address", host)
-            if port is not None:
-                span.set_attribute("server.port", port)
+        }
+        if host:
+            span_attributes["server.address"] = host
+        if port is not None:
+            span_attributes["server.port"] = port
+        with _reference_tracer.start_as_current_span("chat gpt-4o-mini", attributes=span_attributes) as span:
             original_create = client.chat.completions.create
 
             async def _capture_create(*args, **kwargs):
