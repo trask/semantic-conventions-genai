@@ -77,6 +77,7 @@ def run_crew():
         "gen_ai.operation.name": "create_agent",
         "gen_ai.provider.name": "openai",
         "gen_ai.request.model": request_model,
+        "gen_ai.agent.name": researcher_role,
     }
     if host:
         create_agent_span_attributes["server.address"] = host
@@ -85,7 +86,6 @@ def run_crew():
     with _reference_tracer.start_as_current_span(
         "create_agent Researcher", attributes=create_agent_span_attributes
     ) as create_agent_span:
-        create_agent_span.set_attribute("gen_ai.agent.name", researcher_role)
         create_agent_span.set_attribute(
             "gen_ai.system_instructions", json.dumps([{"parts": [{"type": "text", "content": system_prompt}]}])
         )

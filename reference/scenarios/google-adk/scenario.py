@@ -175,6 +175,7 @@ def run_agent_reference():
                     "gen_ai.operation.name": "invoke_agent",
                     "gen_ai.provider.name": "gcp.gemini",
                     "gen_ai.request.model": request_model,
+                    "gen_ai.agent.name": agent.name,
                 }
                 with _reference_tracer.start_as_current_span(
                     "invoke_agent test_agent", attributes=agent_span_attributes
@@ -188,7 +189,6 @@ def run_agent_reference():
                     agent_span.set_attribute("gen_ai.request.presence_penalty", request_presence_penalty)
                     agent_span.set_attribute("gen_ai.request.stop_sequences", request_stop_sequences)
                     agent_span.set_attribute("gen_ai.conversation.id", session.id)
-                    agent_span.set_attribute("gen_ai.agent.name", agent.name)
                     agent_span.set_attribute(
                         "gen_ai.system_instructions",
                         json.dumps([{"parts": [{"type": "text", "content": agent.instruction}]}]),

@@ -228,6 +228,7 @@ def run_tool_call():
         "gen_ai.operation.name": "invoke_agent",
         "gen_ai.provider.name": "openai",
         "gen_ai.request.model": request_model,
+        "gen_ai.agent.name": agent_name,
     }
     with _reference_tracer.start_as_current_span(
         "invoke_agent weather_agent", attributes=agent_span_attributes
@@ -239,7 +240,6 @@ def run_tool_call():
         agent_span.set_attribute("gen_ai.request.stop_sequences", request_stop_sequences)
         agent_span.set_attribute("gen_ai.request.frequency_penalty", request_frequency_penalty)
         agent_span.set_attribute("gen_ai.request.presence_penalty", request_presence_penalty)
-        agent_span.set_attribute("gen_ai.agent.name", agent_name)
         agent_span.set_attribute("gen_ai.system_instructions", system_instructions)
         agent_span.set_attribute(
             "gen_ai.input.messages", json.dumps([{"role": "user", "parts": [{"type": "text", "content": prompt_text}]}])

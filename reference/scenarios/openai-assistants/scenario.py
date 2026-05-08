@@ -62,11 +62,11 @@ def run_invoke_agent(client):
         "gen_ai.operation.name": "create_agent",
         "gen_ai.provider.name": "openai",
         "gen_ai.request.model": request_model,
+        "gen_ai.agent.name": assistant_name,
         "server.address": _SERVER_ADDRESS,
         "server.port": _SERVER_PORT,
     }
     with tracer.start_as_current_span("create_agent", kind=SpanKind.CLIENT, attributes=span_attributes) as span:
-        span.set_attribute("gen_ai.agent.name", assistant_name)
         span.set_attribute("gen_ai.agent.description", assistant_description)
         span.set_attribute(
             "gen_ai.system_instructions", json.dumps([{"parts": [{"type": "text", "content": assistant_instructions}]}])
@@ -96,12 +96,12 @@ def run_invoke_agent(client):
         "gen_ai.operation.name": "invoke_agent",
         "gen_ai.provider.name": "openai",
         "gen_ai.request.model": request_model,
+        "gen_ai.agent.name": assistant.name or "",
         "server.address": _SERVER_ADDRESS,
         "server.port": _SERVER_PORT,
     }
     with tracer.start_as_current_span("invoke_agent", kind=SpanKind.CLIENT, attributes=span_attributes_2) as span:
         span.set_attribute("gen_ai.agent.id", assistant.id)
-        span.set_attribute("gen_ai.agent.name", assistant.name or "")
         span.set_attribute("gen_ai.request.temperature", request_temperature)
         span.set_attribute("gen_ai.request.top_p", request_top_p)
         span.set_attribute("gen_ai.request.max_tokens", request_max_tokens)

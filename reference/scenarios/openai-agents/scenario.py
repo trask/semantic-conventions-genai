@@ -60,6 +60,7 @@ async def run_agent():
         "gen_ai.operation.name": "invoke_agent",
         "gen_ai.provider.name": "openai",
         "gen_ai.request.model": request_model,
+        "gen_ai.agent.name": agent.name,
     }
     if host:
         agent_span_attributes["server.address"] = host
@@ -68,7 +69,6 @@ async def run_agent():
     with _reference_tracer.start_as_current_span(
         "invoke_agent test-agent", attributes=agent_span_attributes
     ) as agent_span:
-        agent_span.set_attribute("gen_ai.agent.name", agent.name)
         agent_span.set_attribute(
             "gen_ai.system_instructions", json.dumps([{"parts": [{"type": "text", "content": agent.instructions}]}])
         )

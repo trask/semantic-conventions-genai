@@ -73,11 +73,11 @@ def run_invoke_agent(client):
         "gen_ai.operation.name": "create_agent",
         "gen_ai.provider.name": "azure.ai.openai",
         "gen_ai.request.model": AGENT_MODEL,
+        "gen_ai.agent.name": AGENT_NAME,
         "server.address": _SERVER_ADDRESS,
         "server.port": _SERVER_PORT,
     }
     with tracer.start_as_current_span("create_agent", kind=SpanKind.CLIENT, attributes=span_attributes) as span:
-        span.set_attribute("gen_ai.agent.name", AGENT_NAME)
         span.set_attribute("gen_ai.agent.description", AGENT_DESCRIPTION)
         span.set_attribute("gen_ai.system_instructions", json.dumps([{"type": "text", "content": AGENT_INSTRUCTIONS}]))
         span.set_attribute("gen_ai.tool.definitions", json.dumps(tool_defs))
@@ -101,6 +101,7 @@ def run_invoke_agent(client):
         "gen_ai.operation.name": "invoke_agent",
         "gen_ai.provider.name": "azure.ai.openai",
         "gen_ai.request.model": AGENT_MODEL,
+        "gen_ai.agent.name": agent.name,
         "server.address": _SERVER_ADDRESS,
         "server.port": _SERVER_PORT,
     }

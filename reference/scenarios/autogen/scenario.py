@@ -116,13 +116,13 @@ def run_agent_reference():
             "gen_ai.operation.name": "create_agent",
             "gen_ai.provider.name": "openai",
             "gen_ai.request.model": request_model,
+            "gen_ai.agent.name": agent_name,
         }
         if host:
             span_attributes_2["server.address"] = host
         if port is not None:
             span_attributes_2["server.port"] = port
         with _reference_tracer.start_as_current_span("create_agent test_agent", attributes=span_attributes_2) as span:
-            span.set_attribute("gen_ai.agent.name", agent_name)
             span.set_attribute("gen_ai.agent.description", agent_description)
             span.set_attribute(
                 "gen_ai.system_instructions", json.dumps([{"parts": [{"type": "text", "content": system_message}]}])
@@ -147,11 +147,11 @@ def run_agent_reference():
                 "gen_ai.operation.name": "invoke_agent",
                 "gen_ai.provider.name": "openai",
                 "gen_ai.request.model": request_model,
+                "gen_ai.agent.name": agent.name,
             }
             with _reference_tracer.start_as_current_span(
                 "invoke_agent test_agent", attributes=agent_span_attributes
             ) as agent_span:
-                agent_span.set_attribute("gen_ai.agent.name", agent.name)
                 agent_span.set_attribute("gen_ai.agent.description", agent.description)
                 agent_span.set_attribute("gen_ai.request.seed", request_seed)
                 agent_span.set_attribute("gen_ai.request.max_tokens", request_max_tokens)
