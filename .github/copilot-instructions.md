@@ -18,8 +18,8 @@ through several coupled surfaces:
   hand-edited.
 - `schema-snapshot/registry.yaml` — committed snapshot, refreshed by
   `make generate-all`.
-- `reference/scenarios/<library>/` — runnable Python reference instrumentation
-  (`scenario.py`) that proves proposed conventions are capturable.
+- `reference/scenarios/<library>/` — runnable Python reference scenarios
+  (`scenario.py`) that prove proposed conventions are capturable.
 
 ## PR scope
 

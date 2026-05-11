@@ -1,6 +1,6 @@
 ---
 name: reference
-description: 'Use when implementing a semantic-conventions PR, upstream proposal diff, spec change, or new GenAI span or attribute in this repository. Adds reference instrumentation, reference scenario updates, inline attribute emission, and data coverage for every Python library that credibly supports the change.'
+description: 'Use when implementing a semantic-conventions PR, upstream proposal diff, spec change, or new GenAI span or attribute in this repository. Adds reference scenarios, inline attribute emission, and data coverage for every Python library that credibly supports the change.'
 argument-hint: 'Describe the semantic-conventions PR or the convention changes that need reference coverage.'
 ---
 
