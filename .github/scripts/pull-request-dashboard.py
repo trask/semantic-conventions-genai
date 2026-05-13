@@ -1166,14 +1166,6 @@ def is_conflict_resolution_comment(body: str) -> bool:
     return "conflict" in text and any(word in text for word in ("resolve", "resolved", "merge"))
 
 
-def _escape_braces(s: str) -> str:
-    # The interpolated JSON blobs can contain literal `{` or `}` (e.g. a
-    # comment body with `{0}` or `{name}`), which would make `str.format`
-    # raise IndexError/KeyError or silently substitute. Escape them so the
-    # template's own placeholders are the only ones format() sees.
-    return s.replace("{", "{{").replace("}", "}}")
-
-
 def thread_prompt(repo: str, number: int, pr: dict[str, Any], facts: dict[str, Any], thread: dict[str, Any]) -> str:
     pr_facts = {
         "number": number,
@@ -1181,8 +1173,8 @@ def thread_prompt(repo: str, number: int, pr: dict[str, Any], facts: dict[str, A
         "description": truncate(pr.get("body") or "", 800),
         **facts,
     }
-    facts_text = _escape_braces(json.dumps(pr_facts, indent=2, sort_keys=True))
-    thread_text = _escape_braces(json.dumps(thread, indent=2, sort_keys=True))
+    facts_text = json.dumps(pr_facts, indent=2, sort_keys=True)
+    thread_text = json.dumps(thread, indent=2, sort_keys=True)
     prompt = THREAD_PROMPT_TEMPLATE.format(repo=repo, number=number, facts=facts_text, thread=thread_text)
     if len(prompt) <= MAX_PROMPT_CHARS:
         return prompt
@@ -1191,7 +1183,7 @@ def thread_prompt(repo: str, number: int, pr: dict[str, Any], facts: dict[str, A
     for c in comments:
         c["body"] = truncate(c.get("body") or "", THREAD_COMMENT_BODY_MAX_CHARS)
     trimmed["comments"] = comments[-THREAD_RECENT_COMMENTS_LIMIT:]
-    thread_text = _escape_braces(json.dumps(trimmed, indent=2, sort_keys=True))
+    thread_text = json.dumps(trimmed, indent=2, sort_keys=True)
     return THREAD_PROMPT_TEMPLATE.format(repo=repo, number=number, facts=facts_text, thread=thread_text)
 
 
