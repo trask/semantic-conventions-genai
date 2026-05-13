@@ -772,13 +772,7 @@ def is_substantive_activity(event: dict[str, Any]) -> bool:
     # comments, and the like must not refresh the waiting clock. Bot PR
     # authors are remapped to their human delegator in `effective_author`,
     # so a real human's activity still shows up here under that login.
-    # Check both `actor_role` and the raw login because `role_for` returns
-    # "author" before bot patterns when the PR author itself is a bot
-    # (e.g. `app/otelbot`), which would otherwise let those events through.
     if event.get("actor_role") == "bot":
-        return False
-    actor = event.get("actor") or ""
-    if actor and is_bot_login(actor):
         return False
     if event["kind"] == "review-state" and event.get("state") != "COMMENTED":
         return True
