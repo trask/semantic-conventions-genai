@@ -178,6 +178,11 @@ SLACK_WEBHOOK_RETRY_DELAY_SECONDS = 1.0
 
 # --- state markers ---------------------------------------------------------
 NOTIFICATION_STATE_MARKER_RE = re.compile(r"<!--\s*notification-state:(.*?)\s*-->", re.S)
+# Legacy marker name used before the notification ledger was split out from
+# the dashboard cache. Still read on the first run after deploy so the
+# existing Slack notification history is preserved; new writes always use
+# `notification-state`.
+LEGACY_NOTIFICATION_STATE_MARKER_RE = re.compile(r"<!--\s*pr-review-dashboard-state:(.*?)\s*-->", re.S)
 DASHBOARD_STATE_MARKER_RE = re.compile(r"<!--\s*dashboard-state:(.*?)\s*-->", re.S)
 
 APPROVER_TEAM_SLUGS = [
@@ -840,7 +845,12 @@ def _append_state(md: str, state: dict[str, Any], pattern: re.Pattern[str], name
 
 
 def notification_state_from_body(body: str) -> dict[str, Any]:
-    return _state_from_body(body, NOTIFICATION_STATE_MARKER_RE)
+    state = _state_from_body(body, NOTIFICATION_STATE_MARKER_RE)
+    if state.get("_loaded_from_dashboard"):
+        return state
+    # Fall back to the legacy marker name so the first run after deploy
+    # keeps the existing Slack notification ledger.
+    return _state_from_body(body, LEGACY_NOTIFICATION_STATE_MARKER_RE)
 
 
 def notification_state_marker(state: dict[str, Any]) -> str:
@@ -848,6 +858,9 @@ def notification_state_marker(state: dict[str, Any]) -> str:
 
 
 def append_notification_state(md: str, state: dict[str, Any]) -> str:
+    # Strip any legacy marker too so we don't leave a stale ledger behind
+    # after migrating to the new marker name.
+    md = LEGACY_NOTIFICATION_STATE_MARKER_RE.sub("", md)
     return _append_state(md, state, NOTIFICATION_STATE_MARKER_RE, "notification-state")
 
 
