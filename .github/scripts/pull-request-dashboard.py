@@ -74,11 +74,10 @@ built up across stages, so not every field is present at every point.
   classifications       list[dict]     Per-thread LLM decisions. Internal.
   error                 str            Error detail, set only on failure paths.
 
-Only ``pr_number``, ``pr_url``, ``failed``, ``route``, and a filtered
-``facts`` survive into the cached dashboard-state JSON (see ``stored_result``
-and ``stable_facts``).
+Only ``pr_number``, ``pr_url``, ``failed``, ``route``, and ``facts``
+survive into the cached dashboard-state JSON (see ``stored_result``).
 
-``facts`` (one per PR) — built in three stages:
+``facts`` (one per PR) — built in two stages:
 
   Stage 1 — compute_facts (deterministic from GitHub data):
     author                          str           Effective author (human, after
@@ -97,25 +96,18 @@ and ``stable_facts``).
     last_author_activity_at         str (iso)
     last_approver_activity_at       str (iso)
     last_external_activity_at       str (iso)
-    seconds_since_last_activity     int | None
-    last_activity_age               str           Human-readable age string.
 
   Stage 2 — add_wait_age_facts (depends on routing + threads):
     waiting_since                   str (iso)     Oldest pending thread, or
                                                   route-appropriate fallback,
                                                   or PR creation time.
-    seconds_since_waiting           int | None
-    waiting_age                     str
     waiting_age_basis               str           Which heuristic chose
                                                   waiting_since.
 
-  Stage 3 — refresh_result_ages (run when re-hydrating from cache):
-    Recomputes seconds_since_waiting / waiting_age / seconds_since_last_activity /
-    last_activity_age from the persisted timestamps so age strings stay current.
-
-Stage-2 fields are absent on failure paths (failed is True). Stage-1 age
-fields are stripped by ``stable_facts`` before persisting to keep the cached
-dashboard-state JSON stable across runs.
+Stage-2 fields are absent on failure paths (failed is True). Human-readable
+``age`` strings (e.g. ``3h``) are derived at render time from these
+timestamps rather than persisted, so the cached JSON stays stable across
+runs when no underlying PR data has changed.
 """
 
 from __future__ import annotations
@@ -872,50 +864,14 @@ def append_dashboard_state(md: str, state: dict[str, Any]) -> str:
     return _append_state(md, state, DASHBOARD_STATE_MARKER_RE, "dashboard-state")
 
 
-def stable_facts(facts: dict[str, Any]) -> dict[str, Any]:
-    return {
-        key: value
-        for key, value in facts.items()
-        if key not in (
-            "last_activity_age",
-            "seconds_since_last_activity",
-            "seconds_since_waiting",
-            "waiting_age",
-        )
-    }
-
-
 def stored_result(result: dict[str, Any]) -> dict[str, Any]:
-    facts = result.get("facts") or {}
     return {
         "pr_number": result.get("pr_number"),
         "pr_url": result.get("pr_url") or "",
         "failed": bool(result.get("failed")),
         "route": result.get("route") or "unknown",
-        "facts": stable_facts(facts),
+        "facts": result.get("facts") or {},
     }
-
-
-def refresh_result_ages(result: dict[str, Any]) -> dict[str, Any]:
-    # Copy the result so we don't poison cached dashboard-state dicts with
-    # volatile age fields (`waiting_age`, `seconds_since_*`). Those fields
-    # would otherwise leak into the next persisted state marker and make
-    # the cached blob change on every render even when the underlying PR
-    # data is unchanged.
-    refreshed = dict(result)
-    facts = dict(result.get("facts") or {})
-    waiting_since = parse_ts(facts.get("waiting_since") or "")
-    if waiting_since is not None:
-        facts["seconds_since_waiting"] = seconds_since(waiting_since)
-        facts["waiting_age"] = activity_age(waiting_since)
-    last_activity = parse_ts(facts.get("last_activity_at") or "")
-    if last_activity is not None:
-        facts["seconds_since_last_activity"] = seconds_since(last_activity)
-        facts["last_activity_age"] = activity_age(last_activity)
-    refreshed["facts"] = facts
-    refreshed.setdefault("classifications", [])
-    refreshed.setdefault("threads", [])
-    return refreshed
 
 
 def results_from_dashboard_state(state: dict[str, Any], open_pr_numbers: set[int]) -> dict[int, dict[str, Any]]:
@@ -928,7 +884,7 @@ def results_from_dashboard_state(state: dict[str, Any], open_pr_numbers: set[int
         except ValueError:
             continue
         if number in open_pr_numbers:
-            results[number] = refresh_result_ages(value)
+            results[number] = value
     return results
 
 
@@ -983,8 +939,6 @@ def compute_facts(raw: dict[str, Any], author: str, events: list[dict[str, Any]]
         "last_author_activity_at": format_ts(author_activity_ts),
         "last_approver_activity_at": format_ts(approver_activity_ts),
         "last_external_activity_at": format_ts(external_activity_ts),
-        "seconds_since_last_activity": seconds_since(last_activity_ts),
-        "last_activity_age": activity_age(last_activity_ts),
     }
     if checks is not None:
         facts["ci_failing_count"] = len(failing)
@@ -1414,8 +1368,6 @@ def add_wait_age_facts(
         wait_ts = parse_ts(facts.get("created_at") or "")
         basis = "created"
     facts["waiting_since"] = format_ts(wait_ts)
-    facts["seconds_since_waiting"] = seconds_since(wait_ts)
-    facts["waiting_age"] = activity_age(wait_ts)
     facts["waiting_age_basis"] = basis
 
 
@@ -1481,7 +1433,10 @@ def slack_message(repo: str, result: dict[str, Any], assignee_mention: str, kind
     number = result.get("pr_number")
     url = result.get("pr_url") or f"https://github.com/{repo}/pull/{number}"
     if kind == "follow-up":
-        lead = f"has been waiting on approvers for {facts.get('waiting_age') or '24h'}"
+        waiting_age = activity_age(parse_ts(facts.get("waiting_since") or ""))
+        if waiting_age == "?":
+            waiting_age = "24h"
+        lead = f"has been waiting on approvers for {waiting_age}"
     else:
         lead = "moved to waiting on approvers"
     return f"{assignee_mention} <{url}|PR #{number}> {lead}"
@@ -1721,15 +1676,16 @@ def conflicts_cell(facts: dict[str, Any]) -> str:
     return "?"
 
 
+def _age_ts(facts: dict[str, Any]) -> datetime | None:
+    return parse_ts(facts.get("waiting_since") or facts.get("last_activity_at") or "")
+
+
 def age_seconds(facts: dict[str, Any]) -> int | None:
-    value = facts.get("seconds_since_waiting")
-    if value is None:
-        value = facts.get("seconds_since_last_activity")
-    return value
+    return seconds_since(_age_ts(facts))
 
 
 def age_cell(facts: dict[str, Any]) -> str:
-    return facts.get("waiting_age") or facts.get("last_activity_age") or "?"
+    return activity_age(_age_ts(facts))
 
 
 def _neutralize_code_fence(s: str) -> str:
