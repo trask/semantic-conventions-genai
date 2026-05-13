@@ -5,12 +5,117 @@ The script keeps repository facts deterministic and asks the LLM only one
 narrow question per unresolved discussion thread: who has the next action for
 that thread?
 
-Output: pull-request-dashboard.md (one section per PR, grouped by category).
+By default, updates the dashboard issue. In dry-run mode, writes
+pull-request-dashboard.md for local inspection.
 
 Usage:
-  python .github/scripts/pull-request-dashboard.py [--output FILE]
+    python .github/scripts/pull-request-dashboard.py
+    python .github/scripts/pull-request-dashboard.py --dry-run
                                                    [--jobs N]
                                                    [--model NAME]
+
+Architecture overview
+---------------------
+
+The dashboard issue body carries two HTML-comment state blobs that survive
+across runs:
+
+  <!-- dashboard-state: {prs: ...} -->        cached per-PR results
+  <!-- notification-state: {prs: ...} -->     per-assignee Slack history
+
+A run flows like this:
+
+  list_open_prs
+       v
+  compute_pr_results
+       single-PR + cache hit:  reuse cached results, recompute only the trigger PR
+       otherwise:              rebuild all PRs in parallel
+       v
+  fetch_dashboard_body                 (read previous notification state)
+       v
+  next_notification_state            (also performs Slack I/O)
+       v
+  fetch_dashboard_body                 (capture base_body for the write CAS)
+       v
+  reconcile_with_latest_dashboard
+       reconciles our calculation against the latest dashboard body, in case
+       another run wrote to it while we were computing
+       v
+  render_dashboard_body                (local)
+       v
+  write_dashboard_issue
+       refuses to write if the body changed under us. Slack I/O happens
+       before the CAS base_body fetch, so the merge/render/write tail is
+       entirely local and the CAS check should very rarely trip. If it
+       does, we drop our write and let the next run pick things up.
+
+Full (no --pr-number) runs always rebuild every PR and write unconditionally.
+Single-PR runs are optimistic-concurrency updates of just one PR slot in the
+cached state.
+
+Field schemas
+-------------
+
+Two record shapes flow through the pipeline as ``dict[str, Any]``. They are
+built up across stages, so not every field is present at every point.
+
+``result`` (one per PR) — produced by ``build_pr_result``:
+
+  pr_number             int            PR number.
+  pr_title              str            PR title.
+  pr_url                str            PR URL.
+  failed                bool           True on any failure; False on success.
+  route                  str            Routing bucket: one of ROUTE_ORDER
+                                       ("maintainer", "approver", "author",
+                                       "external", "transient-failure",
+                                       "unknown") or "draft".
+  facts                 dict           See below. Empty on failure.
+  threads               list[dict]     Unresolved discussion threads. Internal.
+  classifications       list[dict]     Per-thread LLM decisions. Internal.
+  error                 str            Error detail, set only on failure paths.
+
+Only ``pr_number``, ``pr_url``, ``failed``, ``route``, and a filtered
+``facts`` survive into the cached dashboard-state JSON (see ``stored_result``
+and ``stable_facts``).
+
+``facts`` (one per PR) — built in three stages:
+
+  Stage 1 — compute_facts (deterministic from GitHub data):
+    author                          str           Effective author (human, after
+                                                  bot-delegation resolution).
+    assignees                       list[str]     PR assignees.
+    is_otelbot_author               bool          PR opened by app/otelbot.
+    is_draft                        bool
+    approved                        bool          reviewDecision == APPROVED.
+    ci_failing_count                int           Absent when checks could not
+                                                  be fetched.
+    ci_pending_count                int           Absent when checks could not
+                                                  be fetched.
+    conflicts                       str           "yes" | "no" | "unknown".
+    created_at                      str (iso)
+    last_activity_at                str (iso)
+    last_author_activity_at         str (iso)
+    last_approver_activity_at       str (iso)
+    last_external_activity_at       str (iso)
+    seconds_since_last_activity     int | None
+    last_activity_age               str           Human-readable age string.
+
+  Stage 2 — add_wait_age_facts (depends on routing + threads):
+    waiting_since                   str (iso)     Oldest pending thread, or
+                                                  route-appropriate fallback,
+                                                  or PR creation time.
+    seconds_since_waiting           int | None
+    waiting_age                     str
+    waiting_age_basis               str           Which heuristic chose
+                                                  waiting_since.
+
+  Stage 3 — refresh_result_ages (run when re-hydrating from cache):
+    Recomputes seconds_since_waiting / waiting_age / seconds_since_last_activity /
+    last_activity_age from the persisted timestamps so age strings stay current.
+
+Stage-2 fields are absent on failure paths (failed is True). Stage-1 age
+fields are stripped by ``stable_facts`` before persisting to keep the cached
+dashboard-state JSON stable across runs.
 """
 
 from __future__ import annotations
@@ -22,26 +127,58 @@ import re
 import subprocess
 import sys
 import time
+import traceback
 import urllib.error
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-DEFAULT_OUTPUT = "pull-request-dashboard.md"
+# --- dashboard issue identity ----------------------------------------------
+DRY_RUN_OUTPUT = "pull-request-dashboard.md"
+DEFAULT_DASHBOARD_TITLE = "Pull Request Dashboard"
+DEFAULT_DASHBOARD_LABEL = "dashboard"
+
+# --- CLI defaults ----------------------------------------------------------
+# Default --jobs: parallel PRs processed at once (each PR's threads are
+# classified sequentially within that worker).
 DEFAULT_JOBS = 4
 DEFAULT_MODEL = "gpt-5.4-mini"
+
+# --- gh subprocess retry ---------------------------------------------------
 GH_RETRY_ATTEMPTS = 4
 GH_RETRY_DELAY_SECONDS = 1.5
-PER_THREAD_TIMEOUT = 180
-PR_COMMENT_WINDOW = 20
-MAX_BODY_CHARS = 1200
+
+# --- LLM prompt + classification -------------------------------------------
+# subprocess timeout (seconds) for a single `copilot` invocation classifying
+# one discussion thread.
+LLM_THREAD_TIMEOUT_SECONDS = 180
+# Per-thread, keep at most this many of the most recent comments when
+# building the LLM prompt (older comments are dropped, not truncated).
+THREAD_RECENT_COMMENTS_LIMIT = 20
+# Secondary per-comment cap applied only when the formatted prompt would
+# still exceed MAX_PROMPT_CHARS after the comment-window trim.
+THREAD_COMMENT_BODY_MAX_CHARS = 500
+# Default truncation length (chars) for free-text bodies passed to the LLM
+# (commit messages, comment bodies, PR description).
+DEFAULT_TRUNCATE_CHARS = 1200
+# Soft cap on the total length (chars) of the rendered LLM prompt; if
+# exceeded, thread comments are re-trimmed with THREAD_COMMENT_BODY_MAX_CHARS.
 MAX_PROMPT_CHARS = 18_000
+
+# --- Slack notifications ---------------------------------------------------
+# Quiet period before re-pinging an approver about the same PR via Slack
+# (also gated on weekday in the call site).
 APPROVER_FOLLOW_UP_SECONDS = 24 * 60 * 60
 SLACK_WEBHOOK_RETRY_ATTEMPTS = 3
 SLACK_WEBHOOK_RETRY_DELAY_SECONDS = 1.0
-NOTIFICATION_STATE_MARKER_RE = re.compile(r"<!--\s*pr-review-dashboard-state:(.*?)\s*-->", re.S)
+
+# --- state markers ---------------------------------------------------------
+NOTIFICATION_STATE_MARKER_RE = re.compile(r"<!--\s*notification-state:(.*?)\s*-->", re.S)
+DASHBOARD_STATE_MARKER_RE = re.compile(r"<!--\s*dashboard-state:(.*?)\s*-->", re.S)
 
 APPROVER_TEAM_SLUGS = [
     "semconv-genai-approvers",
@@ -64,7 +201,7 @@ Use these labels:
 
 Guidance:
   - Default heuristic: whoever commented last has passed the ball to the other
-    side. If the latest comment is from a reviewer/approver, the author owes a
+    route. If the latest comment is from a reviewer/approver, the author owes a
     response (classify as author). If the latest comment is from the author,
     the reviewer owes a response (classify as reviewer).
   - This applies even to optional suggestions, "for ideas" links, references,
@@ -100,28 +237,37 @@ class TransientGhError(RuntimeError):
     pass
 
 
+_RETRYABLE_GH_ERROR_FRAGMENTS = (
+    "http 5",
+    "gateway timeout",
+    "timeout",
+    "temporarily unavailable",
+    "connection reset",
+    "connection refused",
+)
+
+
 def is_retryable_gh_error(stderr: str) -> bool:
     text = stderr.lower()
-    return (
-        "http 5" in text
-        or "gateway timeout" in text
-        or "timeout" in text
-        or "temporarily unavailable" in text
-        or "connection reset" in text
-        or "connection refused" in text
-    )
+    return any(fragment in text for fragment in _RETRYABLE_GH_ERROR_FRAGMENTS)
 
 
-def gh_retry_delay(attempt: int) -> None:
+def sleep_for_retry(attempt: int) -> None:
     time.sleep(GH_RETRY_DELAY_SECONDS * (attempt + 1))
 
 
-def run_gh_json(cmd: list[str], token: str | None = None) -> Any:
+def run_gh(
+    cmd: list[str],
+    token: str | None = None,
+    input_text: str | None = None,
+    allowed_exit_codes: frozenset[int] | set[int] = frozenset({0}),
+) -> str:
     env = {**os.environ, "GH_TOKEN": token} if token else None
     last_stderr = ""
     for attempt in range(GH_RETRY_ATTEMPTS):
         proc = subprocess.run(
             cmd,
+            input=input_text,
             capture_output=True,
             text=True,
             check=False,
@@ -129,16 +275,20 @@ def run_gh_json(cmd: list[str], token: str | None = None) -> Any:
             errors="replace",
             env=env,
         )
-        if proc.returncode == 0:
-            return json.loads(proc.stdout or "null")
+        if proc.returncode in allowed_exit_codes:
+            return proc.stdout
         last_stderr = proc.stderr.strip()
         if attempt == GH_RETRY_ATTEMPTS - 1 or not is_retryable_gh_error(last_stderr):
             break
-        gh_retry_delay(attempt)
+        sleep_for_retry(attempt)
     message = f"{' '.join(cmd)} failed: {last_stderr}"
     if is_retryable_gh_error(last_stderr):
         raise TransientGhError(message)
     raise RuntimeError(message)
+
+
+def run_gh_json(cmd: list[str], token: str | None = None, input_text: str | None = None) -> Any:
+    return json.loads(run_gh(cmd, token=token, input_text=input_text) or "null")
 
 
 def gh_api(path: str, paginate: bool = False, token: str | None = None) -> Any:
@@ -158,6 +308,57 @@ def gh_api(path: str, paginate: bool = False, token: str | None = None) -> Any:
     return data
 
 
+def find_dashboard_issue(repo: str, title: str, label: str) -> dict[str, Any] | None:
+    encoded_label = urllib.parse.quote(label, safe="")
+    issues = gh_api(f"repos/{repo}/issues?state=open&labels={encoded_label}&per_page=100", paginate=True)
+    matches = [
+        issue
+        for issue in issues
+        if issue.get("pull_request") is None and issue.get("title") == title
+    ]
+    if not matches:
+        return None
+    issue = sorted(matches, key=lambda item: item.get("number") or 0)[0]
+    return gh_api(f"repos/{repo}/issues/{issue['number']}")
+
+
+def fetch_dashboard_body(repo: str, title: str, label: str) -> tuple[int | None, str]:
+    issue = find_dashboard_issue(repo, title, label)
+    if issue is None:
+        return None, ""
+    return int(issue["number"]), issue.get("body") or ""
+
+
+def write_dashboard_issue(
+    repo: str,
+    title: str,
+    label: str,
+    body: str,
+    base_number: int | None,
+    base_body: str,
+) -> bool:
+    current_number, current_body = fetch_dashboard_body(repo, title, label)
+    if base_number is not None:
+        if current_number != base_number:
+            print("dashboard issue changed before update; skipping stale write", file=sys.stderr)
+            return False
+        if current_body != base_body:
+            print(f"dashboard issue #{base_number} was updated by another run; skipping stale write", file=sys.stderr)
+            return False
+        print(f"updating existing dashboard issue #{base_number}", file=sys.stderr)
+        run_gh(["gh", "issue", "edit", str(base_number), "--repo", repo, "--body-file", "-"], input_text=body)
+        return True
+    if current_number is not None:
+        print(f"dashboard issue #{current_number} was created by another run; skipping stale create", file=sys.stderr)
+        return False
+    print("creating new dashboard issue", file=sys.stderr)
+    run_gh(
+        ["gh", "issue", "create", "--repo", repo, "--title", title, "--label", label, "--body-file", "-"],
+        input_text=body,
+    )
+    return True
+
+
 def gh_graphql(query: str, fields: dict[str, Any], token: str | None = None) -> dict[str, Any]:
     cmd = ["gh", "api", "graphql", "-f", f"query={query}"]
     for name, value in fields.items():
@@ -175,52 +376,41 @@ def gh_pr_view(repo: str, number: int) -> dict[str, Any]:
         "additions", "deletions", "changedFiles", "baseRefName",
         "headRefOid", "body",
     ])
+    cmd = ["gh", "pr", "view", str(number), "--repo", repo, "--json", fields]
+    # `run_gh_json` retries transient subprocess failures; this loop retries
+    # the orthogonal case where GitHub returns mergeable=UNKNOWN while it
+    # finishes computing mergeability.
     last: dict[str, Any] = {}
-    last_stderr = ""
     for attempt in range(GH_RETRY_ATTEMPTS):
-        proc = subprocess.run(
-            ["gh", "pr", "view", str(number), "--repo", repo, "--json", fields],
-            capture_output=True,
-            text=True,
-            check=False,
-            encoding="utf-8",
-            errors="replace",
-        )
-        if proc.returncode != 0:
-            last_stderr = proc.stderr.strip()
-            if attempt == GH_RETRY_ATTEMPTS - 1 or not is_retryable_gh_error(last_stderr):
-                message = f"gh pr view {number} failed: {last_stderr}"
-                if is_retryable_gh_error(last_stderr):
-                    raise TransientGhError(message)
-                raise RuntimeError(message)
-            gh_retry_delay(attempt)
-            continue
-        last = json.loads(proc.stdout or "{}")
+        last = run_gh_json(cmd) or {}
         if last.get("mergeable") not in (None, "", "UNKNOWN"):
             return last
         if attempt < GH_RETRY_ATTEMPTS - 1:
-            gh_retry_delay(attempt)
+            sleep_for_retry(attempt)
     return last
 
 
-def gh_pr_checks(repo: str, number: int) -> list[dict[str, Any]]:
-    proc = subprocess.run(
-        [
-            "gh", "pr", "checks", str(number), "--repo", repo, "--json",
-            "name,state,bucket,workflow,description,link",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-        encoding="utf-8",
-        errors="replace",
-    )
-    if proc.returncode not in (0, 8):
+def gh_pr_checks(repo: str, number: int) -> list[dict[str, Any]] | None:
+    # `gh pr checks` exits 8 when there are no checks configured for the PR
+    # (normal, represented as []) and 0 with JSON output otherwise. Other
+    # non-zero exits go through `run_gh`'s retry logic; persistent failures
+    # surface here as None so the dashboard shows unknown CI instead of green.
+    try:
+        stdout = run_gh(
+            [
+                "gh", "pr", "checks", str(number), "--repo", repo, "--json",
+                "name,state,bucket,workflow,description,link",
+            ],
+            allowed_exit_codes={0, 8},
+        )
+    except (RuntimeError, TransientGhError):
+        return None
+    if not stdout.strip():
         return []
     try:
-        return json.loads(proc.stdout or "[]")
+        return json.loads(stdout)
     except json.JSONDecodeError:
-        return []
+        return None
 
 
 def list_open_prs(repo: str) -> list[dict[str, Any]]:
@@ -262,35 +452,78 @@ def load_reviewer_set(org: str) -> set[str]:
 
 REVIEW_THREADS_QUERY = """
 query($owner: String!, $name: String!, $number: Int!, $after: String) {
-  repository(owner: $owner, name: $name) {
-    pullRequest(number: $number) {
-      reviewThreads(first: 100, after: $after) {
-        pageInfo {
-          hasNextPage
-          endCursor
-        }
-        nodes {
-          id
-          isResolved
-          isOutdated
-          path
-          line
-          comments(first: 100) {
-            nodes {
-              id
-              body
-              createdAt
-              author {
-                login
-              }
+    repository(owner: $owner, name: $name) {
+        pullRequest(number: $number) {
+            reviewThreads(first: 100, after: $after) {
+                pageInfo {
+                    hasNextPage
+                    endCursor
+                }
+                nodes {
+                    id
+                    isResolved
+                    isOutdated
+                    path
+                    line
+                    comments(first: 100) {
+                        pageInfo {
+                            hasNextPage
+                            endCursor
+                        }
+                        nodes {
+                            id
+                            body
+                            createdAt
+                            author {
+                                login
+                            }
+                        }
+                    }
+                }
             }
-          }
         }
-      }
     }
-  }
 }
 """
+
+REVIEW_THREAD_COMMENTS_QUERY = """
+query($thread_id: ID!, $after: String) {
+    node(id: $thread_id) {
+        ... on PullRequestReviewThread {
+            comments(first: 100, after: $after) {
+                pageInfo {
+                    hasNextPage
+                    endCursor
+                }
+                nodes {
+                    id
+                    body
+                    createdAt
+                    author {
+                        login
+                    }
+                }
+            }
+        }
+    }
+}
+"""
+
+
+def fetch_remaining_review_thread_comments(thread_id: str, after: str | None) -> list[dict[str, Any]]:
+    comments: list[dict[str, Any]] = []
+    while after:
+        data = gh_graphql(
+            REVIEW_THREAD_COMMENTS_QUERY,
+            {"thread_id": thread_id, "after": after},
+        )
+        connection = (((data.get("data") or {}).get("node") or {}).get("comments") or {})
+        comments.extend(connection.get("nodes") or [])
+        page_info = connection.get("pageInfo") or {}
+        if not page_info.get("hasNextPage"):
+            break
+        after = page_info.get("endCursor") or ""
+    return comments
 
 
 def fetch_review_threads(owner: str, repo_name: str, number: int) -> list[dict[str, Any]]:
@@ -302,7 +535,19 @@ def fetch_review_threads(owner: str, repo_name: str, number: int) -> list[dict[s
             {"owner": owner, "name": repo_name, "number": number, "after": after},
         )
         page = (((data.get("data") or {}).get("repository") or {}).get("pullRequest") or {}).get("reviewThreads") or {}
-        threads.extend(page.get("nodes") or [])
+        for thread in page.get("nodes") or []:
+            comments = thread.get("comments") or {}
+            page_info = comments.get("pageInfo") or {}
+            if page_info.get("hasNextPage"):
+                nodes = list(comments.get("nodes") or [])
+                nodes.extend(fetch_remaining_review_thread_comments(
+                    thread.get("id") or "",
+                    page_info.get("endCursor") or "",
+                ))
+                comments["nodes"] = nodes
+                comments["pageInfo"] = {"hasNextPage": False, "endCursor": ""}
+                thread["comments"] = comments
+            threads.append(thread)
         page_info = page.get("pageInfo") or {}
         if not page_info.get("hasNextPage"):
             return threads
@@ -342,7 +587,7 @@ def activity_age(ts: datetime | None) -> str:
     return f"{hours // 24}d"
 
 
-def truncate(s: str, n: int = MAX_BODY_CHARS) -> str:
+def truncate(s: str, n: int = DEFAULT_TRUNCATE_CHARS) -> str:
     s = (s or "").strip()
     if len(s) <= n:
         return s
@@ -366,6 +611,14 @@ def role_for(login: str, author: str, reviewers: set[str]) -> str:
     return "outsider"
 
 
+# Bot logins appear in two shapes depending on the API:
+#   - `gh pr view`'s `author` field uses the `app/<slug>` form (e.g.
+#     `app/copilot-swe-agent`), which is what `_DELEGATING_BOT_AUTHORS`
+#     matches against in `effective_author`.
+#   - The Pulls/commits endpoint's `committer.login` field returns the bare
+#     slug (e.g. `copilot`), which is what `_BOT_COMMITTER_LOGINS` matches
+#     against in `detect_human_delegator`.
+# Both sets contain `copilot` because the slug shows up in both contexts.
 _BOT_COMMITTER_LOGINS = {"copilot"}
 _DELEGATING_BOT_AUTHORS = {"app/copilot-swe-agent", "copilot"}
 
@@ -393,7 +646,7 @@ def fetch_pr_raw(
     pr_summary: dict[str, Any],
 ) -> dict[str, Any]:
     number = pr_summary["number"]
-    with ThreadPoolExecutor(max_workers=7) as pool:
+    with ThreadPoolExecutor() as pool:
         f_pr = pool.submit(gh_pr_view, repo, number)
         f_issue = pool.submit(
             gh_api,
@@ -424,21 +677,20 @@ def fetch_pr_raw(
             "review_comments": f_revcom.result() or [],
             "reviews": f_reviews.result() or [],
             "commits": f_commits.result() or [],
-            "checks": f_checks.result() or [],
+            "checks": f_checks.result(),
             "review_threads": f_threads.result() or [],
         }
 
 
-def effective_author(raw: dict[str, Any]) -> tuple[str, str]:
+def effective_author(raw: dict[str, Any]) -> str:
     pr = raw["pr"]
     summary = raw["summary"]
     author = actor_login(pr.get("author") or {}) or actor_login(summary.get("author") or {})
-    delegator = ""
     if author.lower() in _DELEGATING_BOT_AUTHORS:
         delegator = detect_human_delegator(raw["commits"])
         if delegator:
-            author = delegator
-    return author, delegator
+            return delegator
+    return author
 
 
 def is_merge_commit(commit: dict[str, Any]) -> bool:
@@ -511,6 +763,10 @@ def normalize_events(raw: dict[str, Any], author: str, reviewers: set[str]) -> l
 def is_substantive_activity(event: dict[str, Any]) -> bool:
     if event.get("is_merge_from_base_by_non_author"):
         return False
+    # Bot events never count as substantive: merge-bot pings, CI status
+    # comments, and the like must not refresh the waiting clock. Bot PR
+    # authors are remapped to their human delegator in `effective_author`,
+    # so a real human's activity still shows up here under that login.
     if event.get("actor_role") == "bot":
         return False
     if event["kind"] == "review-state" and event.get("state") != "COMMENTED":
@@ -538,7 +794,7 @@ def latest_substantive_activity(events: list[dict[str, Any]], actor_roles: set[s
     return max(timestamps) if timestamps else None
 
 
-def ts_text(ts: datetime | None) -> str:
+def format_ts(ts: datetime | None) -> str:
     return ts.isoformat() if ts else ""
 
 
@@ -546,54 +802,148 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def empty_notification_state(loaded: bool = False) -> dict[str, Any]:
-    return {"_loaded_from_dashboard": loaded}
+def empty_state() -> dict[str, Any]:
+    return {"version": 1, "prs": {}, "_loaded_from_dashboard": False}
 
 
-def notification_state_from_body(body: str) -> dict[str, Any]:
-    matches = NOTIFICATION_STATE_MARKER_RE.findall(body or "")
+def _state_from_body(body: str, pattern: re.Pattern[str]) -> dict[str, Any]:
+    matches = pattern.findall(body or "")
     if not matches:
-        return empty_notification_state()
+        return empty_state()
     try:
         state = json.loads(matches[-1])
-    except json.JSONDecodeError:
-        return empty_notification_state()
+    except json.JSONDecodeError as e:
+        print(
+            f"warning: failed to parse {pattern.pattern!r} state marker: {e}; "
+            "falling back to empty state",
+            file=sys.stderr,
+        )
+        return empty_state()
     if not isinstance(state, dict):
-        return empty_notification_state()
-    prs = state.get("prs")
-    if isinstance(prs, dict):
-        state = dict(prs)
-    else:
-        state = {k: v for k, v in state.items() if isinstance(v, dict) and not k.startswith("_")}
+        return empty_state()
+    if not isinstance(state.get("prs"), dict):
+        state["prs"] = {}
+    state["version"] = 1
     state["_loaded_from_dashboard"] = True
     return state
 
 
-def notification_state_from_file(path: str | None) -> dict[str, Any]:
-    if not path:
-        return empty_notification_state()
-    p = Path(path)
-    if not p.exists():
-        return empty_notification_state()
-    return notification_state_from_body(p.read_text(encoding="utf-8"))
+def _state_marker(state: dict[str, Any], name: str) -> str:
+    stored = {k: v for k, v in state.items() if not k.startswith("_")}
+    payload = json.dumps(stored, sort_keys=True, separators=(",", ":"))
+    return f"<!-- {name}:{payload} -->"
+
+
+def _append_state(md: str, state: dict[str, Any], pattern: re.Pattern[str], name: str) -> str:
+    stripped = pattern.sub("", md).rstrip()
+    return f"{stripped}\n\n{_state_marker(state, name)}\n"
+
+
+def notification_state_from_body(body: str) -> dict[str, Any]:
+    return _state_from_body(body, NOTIFICATION_STATE_MARKER_RE)
 
 
 def notification_state_marker(state: dict[str, Any]) -> str:
-    stored_state = {k: v for k, v in state.items() if not k.startswith("_")}
-    state_json = json.dumps(stored_state, sort_keys=True, separators=(",", ":"))
-    return f"<!-- pr-review-dashboard-state:{state_json} -->"
+    return _state_marker(state, "notification-state")
 
 
 def append_notification_state(md: str, state: dict[str, Any]) -> str:
-    stripped = NOTIFICATION_STATE_MARKER_RE.sub("", md).rstrip()
-    return f"{stripped}\n\n{notification_state_marker(state)}\n"
+    return _append_state(md, state, NOTIFICATION_STATE_MARKER_RE, "notification-state")
+
+
+def dashboard_state_from_body(body: str) -> dict[str, Any]:
+    return _state_from_body(body, DASHBOARD_STATE_MARKER_RE)
+
+
+def append_dashboard_state(md: str, state: dict[str, Any]) -> str:
+    return _append_state(md, state, DASHBOARD_STATE_MARKER_RE, "dashboard-state")
+
+
+def stable_facts(facts: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in facts.items()
+        if key not in (
+            "last_activity_age",
+            "seconds_since_last_activity",
+            "seconds_since_waiting",
+            "waiting_age",
+        )
+    }
+
+
+def stored_result(result: dict[str, Any]) -> dict[str, Any]:
+    facts = result.get("facts") or {}
+    return {
+        "pr_number": result.get("pr_number"),
+        "pr_url": result.get("pr_url") or "",
+        "failed": bool(result.get("failed")),
+        "route": result.get("route") or "unknown",
+        "facts": stable_facts(facts),
+    }
+
+
+def refresh_result_ages(result: dict[str, Any]) -> dict[str, Any]:
+    facts = result.get("facts") or {}
+    waiting_since = parse_ts(facts.get("waiting_since") or "")
+    if waiting_since is not None:
+        facts["seconds_since_waiting"] = seconds_since(waiting_since)
+        facts["waiting_age"] = activity_age(waiting_since)
+    last_activity = parse_ts(facts.get("last_activity_at") or "")
+    if last_activity is not None:
+        facts["seconds_since_last_activity"] = seconds_since(last_activity)
+        facts["last_activity_age"] = activity_age(last_activity)
+    result["facts"] = facts
+    result.setdefault("classifications", [])
+    result.setdefault("threads", [])
+    return result
+
+
+def results_from_dashboard_state(state: dict[str, Any], open_pr_numbers: set[int]) -> dict[int, dict[str, Any]]:
+    results: dict[int, dict[str, Any]] = {}
+    for key, value in (state.get("prs") or {}).items():
+        if not isinstance(value, dict):
+            continue
+        try:
+            number = int(key)
+        except ValueError:
+            continue
+        if number in open_pr_numbers:
+            results[number] = refresh_result_ages(value)
+    return results
+
+
+def dashboard_state_from_results(results: dict[int, dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "version": 1,
+        "prs": {str(number): stored_result(result) for number, result in sorted(results.items())},
+        "_loaded_from_dashboard": True,
+    }
+
+
+def update_dashboard_state_for_pr(
+    state: dict[str, Any],
+    number: int,
+    result: dict[str, Any] | None,
+) -> dict[str, Any]:
+    prs = dict(state.get("prs") or {})
+    key = str(number)
+    if result is None:
+        prs.pop(key, None)
+    else:
+        prs[key] = stored_result(result)
+    return {
+        "version": 1,
+        "prs": prs,
+        "_loaded_from_dashboard": bool(state.get("_loaded_from_dashboard")),
+    }
 
 
 def compute_facts(raw: dict[str, Any], author: str, events: list[dict[str, Any]]) -> dict[str, Any]:
     pr = raw["pr"]
     checks = raw["checks"]
-    failing = [c for c in checks if (c.get("state") or "").upper() in ("FAILURE", "ERROR")]
-    pending = [c for c in checks if (c.get("state") or "").upper() in ("PENDING", "QUEUED", "IN_PROGRESS")]
+    failing = [c for c in checks or [] if (c.get("state") or "").upper() in ("FAILURE", "ERROR")]
+    pending = [c for c in checks or [] if (c.get("state") or "").upper() in ("PENDING", "QUEUED", "IN_PROGRESS")]
     last_activity_ts = parse_ts(pr["updatedAt"])
     created_ts = parse_ts(pr["createdAt"])
     author_activity_ts = latest_substantive_activity(events, {"author"})
@@ -602,23 +952,25 @@ def compute_facts(raw: dict[str, Any], author: str, events: list[dict[str, Any]]
     api_author = actor_login(pr.get("author") or {})
     assignees = [actor_login(a) for a in (pr.get("assignees") or [])]
     assignees = [a for a in assignees if a]
-    return {
+    facts = {
         "author": author,
         "assignees": assignees,
         "is_otelbot_author": api_author.lower() == "app/otelbot",
         "is_draft": bool(pr.get("isDraft")),
         "approved": pr.get("reviewDecision") == "APPROVED",
-        "ci_failing_count": len(failing),
-        "ci_pending_count": len(pending),
         "conflicts": compute_conflicts(pr),
-        "created_at": ts_text(created_ts),
-        "last_activity_at": ts_text(last_activity_ts),
-        "last_author_activity_at": ts_text(author_activity_ts),
-        "last_approver_activity_at": ts_text(approver_activity_ts),
-        "last_external_activity_at": ts_text(external_activity_ts),
+        "created_at": format_ts(created_ts),
+        "last_activity_at": format_ts(last_activity_ts),
+        "last_author_activity_at": format_ts(author_activity_ts),
+        "last_approver_activity_at": format_ts(approver_activity_ts),
+        "last_external_activity_at": format_ts(external_activity_ts),
         "seconds_since_last_activity": seconds_since(last_activity_ts),
         "last_activity_age": activity_age(last_activity_ts),
     }
+    if checks is not None:
+        facts["ci_failing_count"] = len(failing)
+        facts["ci_pending_count"] = len(pending)
+    return facts
 
 
 def thread_comment(timestamp: str, actor: str, author: str, reviewers: set[str], body: str) -> dict[str, Any]:
@@ -713,7 +1065,7 @@ def group_pr_conversation(
 
     if facts.get("conflicts") == "no":
         selected = [c for c in selected if not is_conflict_resolution_comment(c.get("body") or "")]
-    selected = selected[-PR_COMMENT_WINDOW:]
+    selected = selected[-THREAD_RECENT_COMMENTS_LIMIT:]
     if not selected:
         return []
     return [add_thread_facts({
@@ -784,7 +1136,7 @@ def extract_json_object(s: str) -> dict[str, Any] | None:
     return objects[-1] if objects else None
 
 
-def valid_thread_action(action: str) -> str:
+def normalize_thread_action(action: str) -> str:
     action = (action or "").lower().strip()
     if action in ("author", "reviewer", "external", "none", "unclear"):
         return action
@@ -797,7 +1149,7 @@ def parse_thread_decision(response_text: str) -> dict[str, str]:
     obj = extract_json_object(response_text) if response_text else None
     if not obj:
         return {"thread_action": "unclear", "reason": "LLM did not return valid JSON"}
-    action = valid_thread_action(str(obj.get("thread_action") or obj.get("side") or ""))
+    action = normalize_thread_action(str(obj.get("thread_action") or obj.get("route") or ""))
     reason = truncate(str(obj.get("reason") or ""), 300)
     if not reason:
         reason = "No reason provided"
@@ -805,8 +1157,21 @@ def parse_thread_decision(response_text: str) -> dict[str, str]:
 
 
 def is_conflict_resolution_comment(body: str) -> bool:
+    # Heuristic used by `group_pr_conversation` to drop stale "please resolve
+    # the conflicts" pings from the LLM prompt once conflicts are actually
+    # gone (gated on `facts["conflicts"] == "no"` at the call site). The
+    # match is intentionally broad — a few false positives are fine because
+    # the gate already ensures the underlying issue is resolved.
     text = (body or "").lower()
     return "conflict" in text and any(word in text for word in ("resolve", "resolved", "merge"))
+
+
+def _escape_braces(s: str) -> str:
+    # The interpolated JSON blobs can contain literal `{` or `}` (e.g. a
+    # comment body with `{0}` or `{name}`), which would make `str.format`
+    # raise IndexError/KeyError or silently substitute. Escape them so the
+    # template's own placeholders are the only ones format() sees.
+    return s.replace("{", "{{").replace("}", "}}")
 
 
 def thread_prompt(repo: str, number: int, pr: dict[str, Any], facts: dict[str, Any], thread: dict[str, Any]) -> str:
@@ -816,17 +1181,17 @@ def thread_prompt(repo: str, number: int, pr: dict[str, Any], facts: dict[str, A
         "description": truncate(pr.get("body") or "", 800),
         **facts,
     }
-    facts_text = json.dumps(pr_facts, indent=2, sort_keys=True)
-    thread_text = json.dumps(thread, indent=2, sort_keys=True)
+    facts_text = _escape_braces(json.dumps(pr_facts, indent=2, sort_keys=True))
+    thread_text = _escape_braces(json.dumps(thread, indent=2, sort_keys=True))
     prompt = THREAD_PROMPT_TEMPLATE.format(repo=repo, number=number, facts=facts_text, thread=thread_text)
     if len(prompt) <= MAX_PROMPT_CHARS:
         return prompt
     trimmed = dict(thread)
     comments = [dict(c) for c in thread.get("comments") or []]
     for c in comments:
-        c["body"] = truncate(c.get("body") or "", 500)
-    trimmed["comments"] = comments[-PR_COMMENT_WINDOW:]
-    thread_text = json.dumps(trimmed, indent=2, sort_keys=True)
+        c["body"] = truncate(c.get("body") or "", THREAD_COMMENT_BODY_MAX_CHARS)
+    trimmed["comments"] = comments[-THREAD_RECENT_COMMENTS_LIMIT:]
+    thread_text = _escape_braces(json.dumps(trimmed, indent=2, sort_keys=True))
     return THREAD_PROMPT_TEMPLATE.format(repo=repo, number=number, facts=facts_text, thread=thread_text)
 
 
@@ -845,17 +1210,17 @@ def run_llm_for_thread(
         text=True,
         encoding="utf-8",
         errors="replace",
-        timeout=PER_THREAD_TIMEOUT,
+        timeout=LLM_THREAD_TIMEOUT_SECONDS,
     )
     response_text, usage = parse_copilot_jsonl(proc.stdout)
     decision = parse_thread_decision(response_text)
     return {
         "thread_id": thread["thread_id"],
         "thread_kind": thread["thread_kind"],
-        "returncode": proc.returncode,
+        "failed": proc.returncode != 0,
         "decision": decision,
         "usage": usage,
-        "raw_stderr": proc.stderr[-2000:] if proc.stderr else "",
+        "error": proc.stderr[-2000:] if proc.stderr else "",
         "response_text": response_text,
     }
 
@@ -876,17 +1241,24 @@ def classify_threads(
             classifications.append({
                 "thread_id": thread["thread_id"],
                 "thread_kind": thread["thread_kind"],
-                "returncode": -1,
+                "failed": True,
                 "decision": {"thread_action": "unclear", "reason": "LLM timeout"},
-                "raw_stderr": "timeout",
+                "error": "timeout",
             })
         except Exception as e:
+            # Boundary: one bad thread must not break the PR. Log the
+            # traceback so genuine bugs are visible in workflow logs.
+            print(
+                f"  warning: thread {thread['thread_id']} on PR #{number} failed to classify:",
+                file=sys.stderr,
+            )
+            traceback.print_exc()
             classifications.append({
                 "thread_id": thread["thread_id"],
                 "thread_kind": thread["thread_kind"],
-                "returncode": -1,
+                "failed": True,
                 "decision": {"thread_action": "unclear", "reason": f"LLM failed: {e!r}"},
-                "raw_stderr": repr(e),
+                "error": repr(e),
             })
     return classifications
 
@@ -894,7 +1266,7 @@ def classify_threads(
 # ---------------------------------------------------------------- routing and rendering
 
 
-SIDE_LABELS = {
+ROUTE_LABELS = {
     "maintainer": "Waiting on maintainers",
     "approver": "Waiting on approvers",
     "author": "Waiting on authors",
@@ -902,8 +1274,8 @@ SIDE_LABELS = {
     "transient-failure": "Transient GitHub failure retrieving PR data",
     "unknown": "Unknown",
 }
-SIDE_ORDER = ["maintainer", "approver", "author", "external", "transient-failure", "unknown"]
-SIDE_THREAD_ACTIONS = {
+ROUTE_ORDER = ["maintainer", "approver", "author", "external", "transient-failure", "unknown"]
+ROUTE_THREAD_ACTIONS = {
     "author": "author",
     "approver": "reviewer",
     "maintainer": "reviewer",
@@ -914,29 +1286,48 @@ SIDE_THREAD_ACTIONS = {
 def action_counts(classifications: list[dict[str, Any]]) -> dict[str, int]:
     counts = {"author": 0, "reviewer": 0, "external": 0, "none": 0, "unclear": 0}
     for c in classifications:
-        action = valid_thread_action((c.get("decision") or {}).get("thread_action") or "")
+        action = normalize_thread_action((c.get("decision") or {}).get("thread_action") or "")
         counts[action] += 1
     return counts
 
 
 def route_pr(facts: dict[str, Any], classifications: list[dict[str, Any]]) -> str:
-    if facts.get("is_draft"):
-        return "draft"
     counts = action_counts(classifications)
+    # Precedence:
+    #   1. otelbot PRs are always either "external" (if any thread points
+    #      outside the repo) or "approver" — they have no human author to
+    #      route to.
+    #   2. Any single thread waiting on the author -> "author".
+    #   3. Otherwise any thread waiting on something external -> "external".
+    #   4. Otherwise the PR's approval status decides: approved -> ready for
+    #      a maintainer to merge; not approved -> still waiting on approvers
+    #      (whether or not a thread is currently pending on a reviewer).
     if facts.get("is_otelbot_author"):
         return "external" if counts["external"] else "approver"
     if counts["author"]:
         return "author"
     if counts["external"]:
         return "external"
-    if counts["reviewer"]:
-        return "maintainer" if facts.get("approved") else "approver"
     if facts.get("approved"):
         return "maintainer"
     return "approver"
 
 
-def thread_by_id(threads: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+def build_pr_result_by_number(
+    repo: str,
+    owner: str,
+    repo_name: str,
+    number: int,
+    reviewers: set[str],
+    model: str,
+) -> dict[str, Any] | None:
+    pr = gh_pr_view(repo, number)
+    if pr.get("state") != "OPEN" or pr.get("isDraft"):
+        return None
+    return build_pr_result(repo, owner, repo_name, {"number": number}, reviewers, model)
+
+
+def threads_by_id(threads: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return {t["thread_id"]: t for t in threads}
 
 
@@ -952,41 +1343,41 @@ def oldest_thread_wait_ts(
     classifications: list[dict[str, Any]],
     action: str,
 ) -> datetime | None:
-    threads_by_id = thread_by_id(threads)
+    by_id = threads_by_id(threads)
     timestamps = [
-        thread_latest_comment_ts(threads_by_id.get(c.get("thread_id") or ""))
+        thread_latest_comment_ts(by_id.get(c.get("thread_id") or ""))
         for c in classifications
-        if valid_thread_action((c.get("decision") or {}).get("thread_action") or "") == action
+        if normalize_thread_action((c.get("decision") or {}).get("thread_action") or "") == action
     ]
     timestamps = [ts for ts in timestamps if ts is not None]
     return min(timestamps) if timestamps else None
 
 
-def fallback_wait_ts(side: str, facts: dict[str, Any]) -> tuple[datetime | None, str]:
-    if side in ("approver", "maintainer"):
+def fallback_wait_ts(route: str, facts: dict[str, Any]) -> tuple[datetime | None, str]:
+    if route in ("approver", "maintainer"):
         return parse_ts(facts.get("last_author_activity_at") or ""), "last_author_activity"
-    if side == "author":
+    if route == "author":
         return parse_ts(facts.get("last_approver_activity_at") or ""), "last_approver_activity"
-    if side == "external":
+    if route == "external":
         return parse_ts(facts.get("last_external_activity_at") or ""), "last_external_activity"
     return parse_ts(facts.get("last_activity_at") or ""), "last_activity"
 
 
 def add_wait_age_facts(
     facts: dict[str, Any],
-    side: str,
+    route: str,
     threads: list[dict[str, Any]],
     classifications: list[dict[str, Any]],
 ) -> None:
-    action = SIDE_THREAD_ACTIONS.get(side)
+    action = ROUTE_THREAD_ACTIONS.get(route)
     wait_ts = oldest_thread_wait_ts(threads, classifications, action) if action else None
     basis = "oldest_pending_thread" if wait_ts else ""
     if wait_ts is None:
-        wait_ts, basis = fallback_wait_ts(side, facts)
+        wait_ts, basis = fallback_wait_ts(route, facts)
     if wait_ts is None:
         wait_ts = parse_ts(facts.get("created_at") or "")
         basis = "created"
-    facts["waiting_since"] = ts_text(wait_ts)
+    facts["waiting_since"] = format_ts(wait_ts)
     facts["seconds_since_waiting"] = seconds_since(wait_ts)
     facts["waiting_age"] = activity_age(wait_ts)
     facts["waiting_age_basis"] = basis
@@ -1051,7 +1442,7 @@ def post_slack_webhook(message: str, webhook_url: str) -> None:
 
 def slack_message(repo: str, result: dict[str, Any], assignee_mention: str, kind: str) -> str:
     facts = result.get("facts") or {}
-    number = result.get("pr_num")
+    number = result.get("pr_number")
     url = result.get("pr_url") or f"https://github.com/{repo}/pull/{number}"
     if kind == "follow-up":
         lead = f"has been waiting on approvers for {facts.get('waiting_age') or '24h'}"
@@ -1060,7 +1451,7 @@ def slack_message(repo: str, result: dict[str, Any], assignee_mention: str, kind
     return f"{assignee_mention} <{url}|PR #{number}> {lead}"
 
 
-def notification_due(
+def pending_notification_kind(
     previous_state_exists: bool,
     previous_pr_state: dict[str, Any],
     previous_assignee_state: dict[str, Any],
@@ -1082,6 +1473,10 @@ def notification_due(
         )
         if is_seen_waiting_period:
             return None
+        # New assignee added partway through an already-tracked waiting
+        # period: the rest of the PR was already in flight, so don't fire
+        # an "initial" notification for them — they'll get follow-ups on
+        # the normal cadence.
         if previous_pr_state and not previous_assignee_state and is_same_waiting_period:
             return None
         return "initial"
@@ -1092,7 +1487,7 @@ def notification_due(
     return None
 
 
-def try_send_slack_notification(
+def send_slack_notification(
     repo: str,
     result: dict[str, Any],
     assignee: str,
@@ -1100,7 +1495,7 @@ def try_send_slack_notification(
     webhook_url: str,
     slack_user_id: str | None,
 ) -> str | None:
-    number = result.get("pr_num")
+    number = result.get("pr_number")
     if not webhook_url:
         return "SLACK_WEBHOOK_URL is not set"
     try:
@@ -1111,86 +1506,142 @@ def try_send_slack_notification(
     return None
 
 
-def update_notification_state(
+def next_assignee_state(
+    repo: str,
+    result: dict[str, Any],
+    assignee: str,
+    kind: str | None,
+    previous_assignee_state: dict[str, Any],
+    send_slack: bool,
+    slack_user_map: dict[str, str],
+    webhook_url: str,
+    now: datetime,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Compute the next assignee notification state.
+
+    Returns `(state, error)`:
+      - `state` is the assignee state dict to persist, or `None` to skip this
+        assignee entirely (no Slack mapping when a send was due).
+      - `error` is a Slack failure message to surface to the caller, or `None`.
+    """
+    assignee_state: dict[str, Any] = {
+        "last_notified_at": previous_assignee_state.get("last_notified_at") or "",
+    }
+
+    if kind and send_slack:
+        slack_user_id = slack_user_map.get(assignee.lower())
+        if not slack_user_id:
+            return None, None
+        error = send_slack_notification(
+            repo, result, assignee, kind, webhook_url, slack_user_id,
+        )
+        if error:
+            assignee_state["notification_pending"] = True
+            return assignee_state, error
+        assignee_state["last_notified_at"] = format_ts(now)
+        assignee_state["last_notification_kind"] = kind
+        assignee_state["notification_pending"] = False
+        return assignee_state, None
+
+    if kind:
+        # Notification is due but we're in dry-run; mark pending so the next
+        # real run can pick it up.
+        assignee_state["notification_pending"] = True
+    elif previous_assignee_state.get("last_notification_kind"):
+        # Carry forward the prior kind and pending flag.
+        assignee_state["last_notification_kind"] = previous_assignee_state["last_notification_kind"]
+        assignee_state["notification_pending"] = bool(previous_assignee_state.get("notification_pending"))
+    elif previous_assignee_state.get("notification_pending"):
+        assignee_state["notification_pending"] = True
+    return assignee_state, None
+
+
+def next_notification_state(
     repo: str,
     results: dict[int, dict[str, Any]],
     previous_state: dict[str, Any],
-    notify_slack: bool,
+    dry_run: bool,
     now: datetime,
+    notification_numbers: set[int] | None = None,
 ) -> dict[str, Any]:
-    previous_prs = {k: v for k, v in previous_state.items() if isinstance(v, dict) and not k.startswith("_")}
+    previous_prs = previous_state.get("prs") or {}
     previous_state_exists = bool(previous_state.get("_loaded_from_dashboard"))
     webhook_url = os.environ.get("SLACK_WEBHOOK_URL") or ""
     notification_errors: list[str] = []
     try:
-        slack_user_map = load_slack_user_map() if notify_slack else {}
+        slack_user_map = {} if dry_run else load_slack_user_map()
     except Exception as e:
+        # Boundary: a malformed SLACK_USER_MAP_JSON env var should not crash
+        # the whole dashboard run. Surface the parse error in the warning
+        # banner and proceed with an empty map (no Slack pings this run).
         notification_errors.append(str(e))
         slack_user_map = {}
 
     new_prs: dict[str, Any] = {}
     for number, result in sorted(results.items()):
-        facts = result.get("facts") or {}
-        side = result.get("side") or "unknown"
         pr_key = str(number)
         previous_pr_state = previous_prs.get(pr_key) or {}
+
+        # Scoped run: preserve unrelated PRs' prior state and move on.
+        if notification_numbers is not None and number not in notification_numbers:
+            if previous_pr_state:
+                new_prs[pr_key] = previous_pr_state
+            continue
+
+        route = result.get("route") or "unknown"
+        # On failure/unknown, preserve prior state without recomputing.
+        if result.get("failed") or route in ("transient-failure", "unknown"):
+            if previous_pr_state:
+                new_prs[pr_key] = previous_pr_state
+            continue
+
+        # Only PRs waiting on approvers trigger notifications.
+        if route != "approver":
+            continue
+
+        facts = result.get("facts") or {}
         current_pr_state: dict[str, Any] = {
             "waiting_since": facts.get("waiting_since") or "",
             "assignee_notifications": {},
         }
-        if result.get("returncode") != 0 or side in ("transient-failure", "unknown"):
-            if previous_pr_state:
-                new_prs[pr_key] = previous_pr_state
-            continue
-        if side != "approver":
-            continue
-
         current_waiting_since = parse_ts(facts.get("waiting_since") or "")
         previous_notifications = previous_pr_state.get("assignee_notifications") or {}
+
         for assignee in facts.get("assignees") or []:
             assignee_key = assignee.lower()
-            previous_assignee_state = previous_notifications.get(assignee_key) or previous_notifications.get(assignee) or {}
-            assignee_state = {
-                "last_notified_at": previous_assignee_state.get("last_notified_at") or "",
-            }
-            kind = notification_due(
+            previous_assignee_state = (
+                previous_notifications.get(assignee_key)
+                or previous_notifications.get(assignee)
+                or {}
+            )
+            kind = pending_notification_kind(
                 previous_state_exists,
                 previous_pr_state,
                 previous_assignee_state,
                 current_waiting_since,
                 now,
             )
-            if kind and notify_slack:
-                slack_user_id = slack_user_map.get(assignee_key)
-                if not slack_user_id:
-                    continue
-                error = try_send_slack_notification(
-                    repo,
-                    result,
-                    assignee,
-                    kind,
-                    webhook_url,
-                    slack_user_id,
-                )
-                if error:
-                    print(f"  warning: {error}", file=sys.stderr)
-                    notification_errors.append(error)
-                    assignee_state["notification_pending"] = True
-                else:
-                    assignee_state["last_notified_at"] = ts_text(now)
-                    assignee_state["last_notification_kind"] = kind
-                    assignee_state["notification_pending"] = False
-            elif kind:
-                assignee_state["notification_pending"] = True
-            elif previous_assignee_state.get("last_notification_kind"):
-                assignee_state["last_notification_kind"] = previous_assignee_state.get("last_notification_kind")
-                assignee_state["notification_pending"] = bool(previous_assignee_state.get("notification_pending"))
-            elif previous_assignee_state.get("notification_pending"):
-                assignee_state["notification_pending"] = True
+            assignee_state, error = next_assignee_state(
+                repo,
+                result,
+                assignee,
+                kind,
+                previous_assignee_state,
+                send_slack=not dry_run,
+                slack_user_map=slack_user_map,
+                webhook_url=webhook_url,
+                now=now,
+            )
+            if assignee_state is None:
+                continue
+            if error:
+                print(f"  warning: {error}", file=sys.stderr)
+                notification_errors.append(error)
             current_pr_state["assignee_notifications"][assignee_key] = assignee_state
+
         if current_pr_state["assignee_notifications"]:
             new_prs[pr_key] = current_pr_state
-    return {**new_prs, "_slack_notification_errors": notification_errors}
+    return {"version": 1, "prs": new_prs, "_slack_notification_errors": notification_errors}
 
 
 def _md_escape(s: str) -> str:
@@ -1242,7 +1693,8 @@ def fetch_workflow_failure_issues(repo: str) -> list[dict[str, Any]]:
         return []
     try:
         issues = json.loads(proc.stdout or "[]")
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        print(f"  warning: failed to parse workflow failure issues JSON: {e}", file=sys.stderr)
         return []
     return [i for i in issues if (i.get("title") or "").startswith("Workflow failed:")]
 
@@ -1302,91 +1754,95 @@ def conflicts_cell(facts: dict[str, Any]) -> str:
     return "?"
 
 
-def approved_cell(facts: dict[str, Any]) -> str:
-    if "approved" not in facts:
-        return "?"
-    return "✅" if facts.get("approved") else " "
-
-
 def age_seconds(facts: dict[str, Any]) -> int | None:
     value = facts.get("seconds_since_waiting")
-    if isinstance(value, int):
-        return value
-    fallback = facts.get("seconds_since_last_activity")
-    return fallback if isinstance(fallback, int) else None
+    if value is None:
+        value = facts.get("seconds_since_last_activity")
+    return value
 
 
 def age_cell(facts: dict[str, Any]) -> str:
     return facts.get("waiting_age") or facts.get("last_activity_age") or "?"
 
 
-def _html_escape(s: str) -> str:
-    return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+def _neutralize_code_fence(s: str) -> str:
+    # Insert a zero-width joiner between backticks so an LLM reason or error
+    # string containing a literal ``` can't prematurely close the diagnostics
+    # code fence. HTML escaping is not needed: data lines live inside a
+    # Markdown code block where GitHub does not render HTML.
+    return (s or "").replace("```", "`\u200d`\u200d`")
 
 
 def render_diagnostics_section(results: dict[int, dict[str, Any]]) -> list[str]:
-    lines = ["<details>", "<summary>Diagnostics</summary>", "", "```text"]
+    data_lines: list[str] = []
     for number in sorted(results, reverse=True):
         result = results[number]
         facts = result.get("facts") or {}
         counts = action_counts(result.get("classifications") or [])
-        lines.append(f"PR #{number}")
-        lines.append(
+        data_lines.append(f"PR #{number}")
+        data_lines.append(
             f"facts: approved={facts.get('approved')} conflicts={facts.get('conflicts')} "
             f"age={age_cell(facts)} "
             f"age_basis={facts.get('waiting_age_basis')} "
             f"last_activity_age={facts.get('last_activity_age')}"
         )
-        lines.append("threads: " + " ".join(f"{k}={v}" for k, v in counts.items()))
+        data_lines.append("threads: " + " ".join(f"{k}={v}" for k, v in counts.items()))
         for c in result.get("classifications") or []:
             decision = c.get("decision") or {}
             reason = (decision.get("reason") or "").replace("\n", " ")
-            lines.append(f"llm: {c.get('thread_id')} -> {decision.get('thread_action')} ({reason})")
-        if result.get("raw_stderr"):
-            lines.append(f"error: {result.get('raw_stderr')}")
-        lines.append(f"route: {result.get('side', 'unknown')}")
-        lines.append("")
-    lines.extend(["```", "", "</details>", ""])
-    return [_html_escape(line) if line not in ("<details>", "<summary>Diagnostics</summary>", "</details>") else line for line in lines]
+            data_lines.append(f"llm: {c.get('thread_id')} -> {decision.get('thread_action')} ({reason})")
+        if result.get("error"):
+            data_lines.append(f"error: {result.get('error')}")
+        data_lines.append(f"route: {result.get('route', 'unknown')}")
+        data_lines.append("")
+    return [
+        "<details>",
+        "<summary>Diagnostics</summary>",
+        "",
+        "```text",
+        *(_neutralize_code_fence(line) for line in data_lines),
+        "```",
+        "",
+        "</details>",
+        "",
+    ]
 
 
-def render_markdown_compact(
+def render_pr_tables(
     prs: list[dict[str, Any]],
     results: dict[int, dict[str, Any]],
     repo: str,
     workflow_issues: list[dict[str, Any]] | None = None,
 ) -> str:
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     source_url = f"https://github.com/{repo}/blob/main/.github/scripts/pull-request-dashboard.py"
     refresh_url = f"https://github.com/{repo}/actions/workflows/pr-review-dashboard.yml"
     out: list[str] = [
         "> [!NOTE]",
         "> Open non-draft PRs grouped by who is expected to act next. Draft PRs are "
         "listed separately. The grouping is "
-        f"partly performed by an LLM ([source]({source_url})) and could contain mistakes. "
-        f"Refreshed about every hour. Last refresh: {now}.",
+        f"partly performed by an LLM ([source]({source_url})) and could contain mistakes.",
         "",
     ]
 
-    by_side: dict[str, list[dict[str, Any]]] = {}
+    by_route: dict[str, list[dict[str, Any]]] = {}
     for pr in prs:
         if pr.get("isDraft"):
             continue
-        res = results.get(pr["number"]) or {"side": "unknown"}
-        by_side.setdefault(res.get("side") or "unknown", []).append(pr)
+        res = results.get(pr["number"]) or {"route": "unknown"}
+        by_route.setdefault(res.get("route") or "unknown", []).append(pr)
 
     def row_sort_key(pr: dict[str, Any]) -> tuple[int, int]:
         res = results.get(pr["number"]) or {}
         facts = res.get("facts") or {}
         activity = age_seconds(facts)
-        return (activity if isinstance(activity, int) else -1, pr["number"])
+        return (activity if activity is not None else -1, pr["number"])
 
-    for side in SIDE_ORDER:
-        rows = by_side.get(side) or []
+    for route in ROUTE_ORDER:
+        rows = by_route.get(route) or []
         if not rows:
             continue
         rows.sort(key=row_sort_key, reverse=True)
-        out.append(f"## {SIDE_LABELS.get(side, side)}")
+        out.append(f"## {ROUTE_LABELS.get(route, route)}")
         out.append("")
         out.append("| PR | Author | Assignees | CI | Conflicts | Age |")
         out.append("|---|---|---|:---:|:---:|:---:|")
@@ -1433,79 +1889,99 @@ def build_pr_result(
     number = pr_summary["number"]
     try:
         raw = fetch_pr_raw(repo, owner, repo_name, pr_summary)
-        author, delegator = effective_author(raw)
+        author = effective_author(raw)
         events = normalize_events(raw, author, reviewers)
         facts = compute_facts(raw, author, events)
         threads = group_discussion_threads(raw, events, author, reviewers, facts)
         classifications = classify_threads(repo, number, raw["pr"], facts, threads, model)
-        side = route_pr(facts, classifications)
-        add_wait_age_facts(facts, side, threads, classifications)
+        route = route_pr(facts, classifications)
+        add_wait_age_facts(facts, route, threads, classifications)
         return {
-            "pr_num": number,
+            "pr_number": number,
             "pr_title": raw["pr"].get("title") or "",
             "pr_url": raw["pr"].get("url") or "",
-            "returncode": 0,
+            "failed": False,
             "facts": facts,
-            "delegator": delegator,
-            "events": events,
             "threads": threads,
             "classifications": classifications,
-            "side": side,
+            "route": route,
         }
     except TransientGhError as e:
         return {
-            "pr_num": number,
-            "returncode": -1,
+            "pr_number": number,
+            "failed": True,
             "facts": {},
             "threads": [],
             "classifications": [],
-            "side": "transient-failure",
-            "raw_stderr": repr(e),
+            "route": "transient-failure",
+            "error": repr(e),
         }
     except Exception as e:
+        # Boundary: one bad PR must not break the dashboard run. Log the
+        # traceback so genuine bugs are visible in workflow logs instead
+        # of being silently routed to "Unknown" forever.
+        print(f"  warning: PR #{number} failed to build result:", file=sys.stderr)
+        traceback.print_exc()
         return {
-            "pr_num": number,
-            "returncode": -1,
+            "pr_number": number,
+            "failed": True,
             "facts": {},
             "threads": [],
             "classifications": [],
-            "side": "unknown",
-            "raw_stderr": repr(e),
+            "route": "unknown",
+            "error": repr(e),
         }
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--output", default=DEFAULT_OUTPUT, help=f"output file (default: {DEFAULT_OUTPUT})")
-    ap.add_argument("--previous-dashboard", help="previous dashboard issue body, used as the notification ledger")
-    ap.add_argument(
-        "--slack-notify-approver-waiting",
-        action="store_true",
-        help="Post Slack notifications when assigned PRs enter or remain in the approver bucket",
-    )
-    ap.add_argument("--jobs", type=int, default=DEFAULT_JOBS, help=f"parallel workers (default: {DEFAULT_JOBS})")
-    ap.add_argument("--model", default=DEFAULT_MODEL, help=f"copilot model (default: {DEFAULT_MODEL})")
-    args = ap.parse_args()
+@dataclass
+class DashboardCalculation:
+    results: dict[int, dict[str, Any]]
+    dashboard_state: dict[str, Any]
+    trigger_pr_result: dict[str, Any] | None = None
+    current_pr_result: dict[str, Any] | None = None
+    used_cached_dashboard_state: bool = False
 
-    repo = detect_repo()
-    owner, repo_name = repo.split("/", 1)
-    previous_state = notification_state_from_file(args.previous_dashboard)
 
-    reviewers = load_reviewer_set(owner)
-    print(f"reviewer set ({len(reviewers)})", file=sys.stderr)
+def compute_pr_results(
+    repo: str,
+    owner: str,
+    repo_name: str,
+    non_drafts: list[dict[str, Any]],
+    open_pr_numbers: set[int],
+    reviewers: set[str],
+    pr_number: int | None,
+    jobs: int,
+    model: str,
+) -> DashboardCalculation:
+    dashboard_state = empty_state()
+    if pr_number:
+        _, cached_body = fetch_dashboard_body(repo, DEFAULT_DASHBOARD_TITLE, DEFAULT_DASHBOARD_LABEL)
+        dashboard_state = dashboard_state_from_body(cached_body)
 
-    prs = list_open_prs(repo)
-    drafts = [p for p in prs if p.get("isDraft")]
-    non_drafts = [p for p in prs if not p.get("isDraft")]
-    if drafts:
-        print(f"skipping {len(drafts)} draft PR(s)", file=sys.stderr)
+    if pr_number and dashboard_state.get("_loaded_from_dashboard"):
+        print(f"refreshing dashboard state for PR #{pr_number}", file=sys.stderr)
+        results = results_from_dashboard_state(dashboard_state, open_pr_numbers)
+        trigger_pr_result = build_pr_result_by_number(repo, owner, repo_name, pr_number, reviewers, model)
+        if trigger_pr_result is None:
+            results.pop(pr_number, None)
+        else:
+            results[pr_number] = trigger_pr_result
+        current_pr_result = stored_result(trigger_pr_result) if trigger_pr_result is not None else None
+        return DashboardCalculation(
+            results=results,
+            dashboard_state=dashboard_state,
+            trigger_pr_result=trigger_pr_result,
+            current_pr_result=current_pr_result,
+            used_cached_dashboard_state=True,
+        )
 
-    print(f"processing {len(non_drafts)} PR(s) in {repo} (model={args.model}, jobs={args.jobs})", file=sys.stderr)
-
-    results: dict[int, dict[str, Any]] = {}
-    with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+    if pr_number:
+        print("dashboard result state not found; rebuilding all PRs", file=sys.stderr)
+    print(f"processing {len(non_drafts)} PR(s) in {repo} (model={model}, jobs={jobs})", file=sys.stderr)
+    results = {}
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
         futures = {
-            pool.submit(build_pr_result, repo, owner, repo_name, pr, reviewers, args.model): pr
+            pool.submit(build_pr_result, repo, owner, repo_name, pr, reviewers, model): pr
             for pr in non_drafts
         }
         for i, fut in enumerate(as_completed(futures), 1):
@@ -1513,32 +1989,173 @@ def main() -> int:
             try:
                 res = fut.result()
             except Exception as e:
-                res = {"pr_num": pr["number"], "returncode": -1, "side": "unknown", "raw_stderr": repr(e)}
+                # Boundary: `build_pr_result` already catches its own
+                # exceptions, so this is a safety net for cancellations or
+                # bugs that escape the inner handler. One bad future must
+                # not break the whole dashboard run.
+                res = {"pr_number": pr["number"], "failed": True, "route": "unknown", "error": repr(e)}
             results[pr["number"]] = res
             counts = action_counts(res.get("classifications") or [])
             print(
-                f"  [{i}/{len(non_drafts)}] #{pr['number']} -> {res.get('side', 'unknown')} "
+                f"  [{i}/{len(non_drafts)}] #{pr['number']} -> {res.get('route', 'unknown')} "
                 f"({', '.join(f'{k}={v}' for k, v in counts.items())})",
                 file=sys.stderr,
             )
 
-    workflow_issues = fetch_workflow_failure_issues(repo)
-    notification_state = update_notification_state(
-        repo,
-        results,
-        previous_state,
-        args.slack_notify_approver_waiting,
-        utc_now(),
+    dashboard_state = dashboard_state_from_results(results)
+    trigger_pr_result = results.get(pr_number) if pr_number else None
+    current_pr_result = stored_result(trigger_pr_result) if trigger_pr_result is not None else None
+    return DashboardCalculation(
+        results=results,
+        dashboard_state=dashboard_state,
+        trigger_pr_result=trigger_pr_result,
+        current_pr_result=current_pr_result,
     )
-    md = render_markdown_compact(prs, results, repo, workflow_issues)
+
+
+def reconcile_with_latest_dashboard(
+    calculation: DashboardCalculation,
+    pr_number: int | None,
+    latest_body: str,
+    open_pr_numbers: set[int],
+) -> tuple[DashboardCalculation, bool]:
+    if not pr_number or not calculation.used_cached_dashboard_state:
+        return calculation, False
+
+    latest_dashboard_state = dashboard_state_from_body(latest_body)
+    previous_pr_result = (latest_dashboard_state.get("prs") or {}).get(str(pr_number))
+    dashboard_state = calculation.dashboard_state
+    results = calculation.results
+
+    if previous_pr_result == calculation.current_pr_result:
+        if latest_dashboard_state.get("_loaded_from_dashboard"):
+            dashboard_state = latest_dashboard_state
+            results = results_from_dashboard_state(dashboard_state, open_pr_numbers)
+        return replace(calculation, results=results, dashboard_state=dashboard_state), True
+
+    if latest_dashboard_state.get("_loaded_from_dashboard"):
+        dashboard_state = latest_dashboard_state
+    dashboard_state = update_dashboard_state_for_pr(dashboard_state, pr_number, calculation.trigger_pr_result)
+    results = results_from_dashboard_state(dashboard_state, open_pr_numbers)
+    return replace(calculation, results=results, dashboard_state=dashboard_state), False
+
+
+def render_dashboard_body(
+    prs: list[dict[str, Any]],
+    results: dict[int, dict[str, Any]],
+    repo: str,
+    workflow_issues: list[dict[str, Any]],
+    dashboard_state: dict[str, Any],
+    notification_state: dict[str, Any],
+) -> str:
+    md = render_pr_tables(prs, results, repo, workflow_issues)
     md = prepend_slack_notification_warning(
         md,
         notification_state.get("_slack_notification_errors") or [],
         repo,
     )
+    md = append_dashboard_state(md, dashboard_state)
     md = append_notification_state(md, notification_state)
-    Path(args.output).write_text(md, encoding="utf-8")
-    print(f"wrote {args.output}", file=sys.stderr)
+    return md
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=f"Write rendered dashboard markdown to {DRY_RUN_OUTPUT} instead of updating the dashboard issue or Slack",
+    )
+    ap.add_argument("--jobs", type=int, default=DEFAULT_JOBS, help=f"parallel workers (default: {DEFAULT_JOBS})")
+    ap.add_argument("--model", default=DEFAULT_MODEL, help=f"copilot model (default: {DEFAULT_MODEL})")
+    ap.add_argument("--pr-number", type=int, help="only refresh dashboard state for this PR")
+    args = ap.parse_args()
+
+    repo = detect_repo()
+    owner, repo_name = repo.split("/", 1)
+
+    prs = list_open_prs(repo)
+    open_pr_numbers = {p["number"] for p in prs}
+    drafts = [p for p in prs if p.get("isDraft")]
+    non_drafts = [p for p in prs if not p.get("isDraft")]
+    if drafts:
+        print(f"skipping {len(drafts)} draft PR(s)", file=sys.stderr)
+
+    reviewers = load_reviewer_set(owner)
+    print(f"reviewer set ({len(reviewers)})", file=sys.stderr)
+
+    calculation = compute_pr_results(
+        repo,
+        owner,
+        repo_name,
+        non_drafts,
+        open_pr_numbers,
+        reviewers,
+        args.pr_number,
+        args.jobs,
+        args.model,
+    )
+
+    # Do Slack notifications first, before we capture base_body for the
+    # optimistic-concurrency check. Slack is the only I/O between the body
+    # fetch and the write, so doing it before the fetch keeps the CAS window
+    # purely local (merge / render / write). The previous notification state
+    # is read from a separate body fetch and doesn't have to match the body
+    # we later overwrite — a concurrent dashboard write between these two
+    # fetches at worst means we re-evaluate notifications against a slightly
+    # newer state on the next run.
+    initial_body = fetch_dashboard_body(repo, DEFAULT_DASHBOARD_TITLE, DEFAULT_DASHBOARD_LABEL)[1]
+    previous_state = notification_state_from_body(initial_body)
+    workflow_issues = fetch_workflow_failure_issues(repo)
+    notification_numbers = {args.pr_number} if args.pr_number else None
+    notification_state = next_notification_state(
+        repo,
+        calculation.results,
+        previous_state,
+        args.dry_run,
+        utc_now(),
+        notification_numbers,
+    )
+    notification_state_changed = notification_state_marker(notification_state) != notification_state_marker(previous_state)
+
+    # Re-fetch as the CAS reference. From here on, everything is local.
+    dashboard_issue_number, base_body = fetch_dashboard_body(repo, DEFAULT_DASHBOARD_TITLE, DEFAULT_DASHBOARD_LABEL)
+    calculation, dashboard_state_unchanged = reconcile_with_latest_dashboard(
+        calculation,
+        args.pr_number,
+        base_body,
+        open_pr_numbers,
+    )
+
+    if dashboard_state_unchanged and not notification_state_changed and not notification_state.get("_slack_notification_errors"):
+        if args.dry_run:
+            output_path = Path(DRY_RUN_OUTPUT)
+            output_path.write_text(base_body, encoding="utf-8")
+            print(f"wrote dry-run dashboard to {output_path.resolve()}", file=sys.stderr)
+        print(f"PR #{args.pr_number} dashboard state unchanged", file=sys.stderr)
+        return 0
+
+    md = render_dashboard_body(
+        prs,
+        calculation.results,
+        repo,
+        workflow_issues,
+        calculation.dashboard_state,
+        notification_state,
+    )
+    if args.dry_run:
+        output_path = Path(DRY_RUN_OUTPUT)
+        output_path.write_text(md, encoding="utf-8")
+        print(f"wrote dry-run dashboard to {output_path.resolve()}", file=sys.stderr)
+    else:
+        write_dashboard_issue(
+            repo,
+            DEFAULT_DASHBOARD_TITLE,
+            DEFAULT_DASHBOARD_LABEL,
+            md,
+            dashboard_issue_number,
+            base_body,
+        )
     return 0
 
 
