@@ -1825,23 +1825,17 @@ def render_diagnostics_section(results: dict[int, dict[str, Any]]) -> list[str]:
     data_lines: list[str] = []
     for number in sorted(results, reverse=True):
         result = results[number]
-        facts = result.get("facts") or {}
-        counts = action_counts(result.get("classifications") or [])
+        classifications = result.get("classifications") or []
+        error = result.get("error")
+        if not classifications and not error:
+            continue
         data_lines.append(f"PR #{number}")
-        data_lines.append(
-            f"facts: approved={facts.get('approved')} conflicts={facts.get('conflicts')} "
-            f"age={age_cell(facts)} "
-            f"age_basis={facts.get('waiting_age_basis')} "
-            f"last_activity_age={facts.get('last_activity_age')}"
-        )
-        data_lines.append("threads: " + " ".join(f"{k}={v}" for k, v in counts.items()))
-        for c in result.get("classifications") or []:
+        for c in classifications:
             decision = c.get("decision") or {}
             reason = (decision.get("reason") or "").replace("\n", " ")
             data_lines.append(f"llm: {c.get('thread_id')} -> {decision.get('thread_action')} ({reason})")
-        if result.get("error"):
-            data_lines.append(f"error: {result.get('error')}")
-        data_lines.append(f"route: {result.get('route', 'unknown')}")
+        if error:
+            data_lines.append(f"error: {error}")
         data_lines.append("")
     return [
         "<details>",
