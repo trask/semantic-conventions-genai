@@ -39,6 +39,7 @@ jobs:
     if: ${{ github.event_name != 'issue_comment' || github.event.issue.pull_request }}
     permissions:
       checks: read
+      contents: read
       issues: write
       pull-requests: read
     environment: protected
