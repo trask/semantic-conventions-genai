@@ -1502,22 +1502,15 @@ def pending_notification_kind(
     last_notified = parse_ts(previous_assignee_state.get("last_notified_at") or "")
     if last_notified is None:
         is_same_waiting_period = previous_waiting_since == current_waiting_since
-        is_seen_waiting_period = (
-            previous_assignee_state
-            and not previous_assignee_state.get("notification_pending")
-            and is_same_waiting_period
-        )
-        if is_seen_waiting_period:
-            return None
         # New assignee added partway through an already-tracked waiting
         # period: the rest of the PR was already in flight, so don't fire
         # an "initial" notification for them. Seed the follow-up cadence
-        # from now so they still get pinged on the normal 24h schedule
-        # rather than being silently dropped (an empty assignee state would
-        # later look like a "seen" period and suppress notifications
-        # indefinitely until `waiting_since` changes).
+        # from now so they still get pinged on the normal 24h schedule.
         if previous_pr_state and not previous_assignee_state and is_same_waiting_period:
             return "skip-initial"
+        # Otherwise either this is a fresh PR/assignee or a prior send
+        # failed (success would have set `last_notified_at`); either way,
+        # send the initial notification.
         return "initial"
     if current_waiting_since > last_notified:
         return "initial"
@@ -1573,7 +1566,6 @@ def next_assignee_state(
         # cadence kicks in on the normal schedule.
         assignee_state["last_notified_at"] = format_ts(now)
         assignee_state["last_notification_kind"] = "initial"
-        assignee_state["notification_pending"] = False
         return assignee_state, None
 
     if kind and send_slack:
@@ -1584,23 +1576,18 @@ def next_assignee_state(
             repo, result, assignee, kind, webhook_url, slack_user_id,
         )
         if error:
-            assignee_state["notification_pending"] = True
+            # Leave `last_notified_at` unchanged so the next run retries.
             return assignee_state, error
         assignee_state["last_notified_at"] = format_ts(now)
         assignee_state["last_notification_kind"] = kind
-        assignee_state["notification_pending"] = False
         return assignee_state, None
 
-    if kind:
-        # Notification is due but we're in dry-run; mark pending so the next
-        # real run can pick it up.
-        assignee_state["notification_pending"] = True
-    elif previous_assignee_state.get("last_notification_kind"):
-        # Carry forward the prior kind and pending flag.
+    # No notification due (or dry-run with one due): carry forward the prior
+    # kind. For dry-run with a due notification, `last_notified_at` is left
+    # at its prior value, so the next real run will redo the cadence check
+    # and fire if still due.
+    if previous_assignee_state.get("last_notification_kind"):
         assignee_state["last_notification_kind"] = previous_assignee_state["last_notification_kind"]
-        assignee_state["notification_pending"] = bool(previous_assignee_state.get("notification_pending"))
-    elif previous_assignee_state.get("notification_pending"):
-        assignee_state["notification_pending"] = True
     return assignee_state, None
 
 
@@ -1615,15 +1602,7 @@ def next_notification_state(
     previous_prs = previous_state.get("prs") or {}
     previous_state_exists = bool(previous_state.get("_loaded_from_dashboard"))
     webhook_url = os.environ.get("SLACK_WEBHOOK_URL") or ""
-    notification_errors: list[str] = []
-    try:
-        slack_user_map = {} if dry_run else load_slack_user_map()
-    except Exception as e:
-        # Boundary: a malformed SLACK_USER_MAP_JSON env var should not crash
-        # the whole dashboard run. Surface the parse error in the warning
-        # banner and proceed with an empty map (no Slack pings this run).
-        notification_errors.append(str(e))
-        slack_user_map = {}
+    slack_user_map = {} if dry_run else load_slack_user_map()
 
     new_prs: dict[str, Any] = {}
     for number, result in sorted(results.items()):
@@ -1684,12 +1663,11 @@ def next_notification_state(
                 continue
             if error:
                 print(f"  warning: {error}", file=sys.stderr)
-                notification_errors.append(error)
             current_pr_state["assignee_notifications"][assignee_key] = assignee_state
 
         if current_pr_state["assignee_notifications"]:
             new_prs[pr_key] = current_pr_state
-    return {"version": 1, "prs": new_prs, "_slack_notification_errors": notification_errors}
+    return {"version": 1, "prs": new_prs}
 
 
 def _md_escape(s: str) -> str:
@@ -1703,23 +1681,6 @@ def github_run_url(repo: str) -> str:
     if run_id:
         return f"{server_url}/{repository}/actions/runs/{run_id}"
     return f"https://github.com/{repo}/actions/workflows/pr-review-dashboard.yml"
-
-
-def prepend_slack_notification_warning(md: str, errors: list[str], repo: str) -> str:
-    if not errors:
-        return md
-    unique_errors = list(dict.fromkeys(errors))
-    run_url = github_run_url(repo)
-    lines = [
-        "> [!WARNING]",
-        "> Slack notifications for assignees are currently failing. "
-        f"See the [latest dashboard run]({run_url}) for logs.",
-    ]
-    for error in unique_errors[:5]:
-        lines.append(f"> - {_md_escape(error)}")
-    if len(unique_errors) > 5:
-        lines.append(f"> - ...and {len(unique_errors) - 5} more notification error(s).")
-    return "\n".join(lines) + "\n\n" + md
 
 
 def render_draft_pr_section(prs: list[dict[str, Any]]) -> list[str]:
@@ -2046,11 +2007,6 @@ def render_dashboard_body(
     notification_state: dict[str, Any],
 ) -> str:
     md = render_pr_tables(prs, results, repo)
-    md = prepend_slack_notification_warning(
-        md,
-        notification_state.get("_slack_notification_errors") or [],
-        repo,
-    )
     md = append_dashboard_state(md, dashboard_state)
     md = append_notification_state(md, notification_state)
     return md
@@ -2123,16 +2079,7 @@ def main() -> int:
         open_pr_numbers,
     )
 
-    has_stale_slack_warning = (
-        "Slack notifications for assignees are currently failing." in base_body
-        and not notification_state.get("_slack_notification_errors")
-    )
-    if (
-        dashboard_state_unchanged
-        and not notification_state_changed
-        and not notification_state.get("_slack_notification_errors")
-        and not has_stale_slack_warning
-    ):
+    if dashboard_state_unchanged and not notification_state_changed:
         if args.dry_run:
             output_path = Path(DRY_RUN_OUTPUT)
             output_path.write_text(base_body, encoding="utf-8")
