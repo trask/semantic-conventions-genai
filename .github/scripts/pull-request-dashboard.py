@@ -21,7 +21,7 @@ The dashboard issue body carries two HTML-comment state blobs that survive
 across runs:
 
   <!-- dashboard-state: {prs: ...} -->        cached per-PR results
-  <!-- notification-state: {prs: ...} -->     per-assignee Slack history
+  <!-- notification-state: {prs: ...} -->     per-PR Slack history
 
 A run flows like this:
 
@@ -1404,7 +1404,6 @@ def slack_message(repo: str, result: dict[str, Any], assignee_mention: str, kind
 def pending_notification_kind(
     previous_state_exists: bool,
     previous_pr_state: dict[str, Any],
-    previous_assignee_state: dict[str, Any],
     current_waiting_since: datetime | None,
     now: datetime,
 ) -> str | None:
@@ -1412,21 +1411,11 @@ def pending_notification_kind(
         return None
     if current_waiting_since is None:
         return None
-    previous_waiting_since = parse_ts(previous_pr_state.get("waiting_since") or "")
-    last_notified = parse_ts(previous_assignee_state.get("last_notified_at") or "")
-    if last_notified is None:
-        is_same_waiting_period = previous_waiting_since == current_waiting_since
-        # New assignee added partway through an already-tracked waiting
-        # period: the rest of the PR was already in flight, so don't fire
-        # an "initial" notification for them. Seed the follow-up cadence
-        # from now so they still get pinged on the normal 24h schedule.
-        if previous_pr_state and not previous_assignee_state and is_same_waiting_period:
-            return "skip-initial"
-        # Otherwise either this is a fresh PR/assignee or a prior send
-        # failed (success would have set `last_notified_at`); either way,
-        # send the initial notification.
-        return "initial"
-    if current_waiting_since > last_notified:
+    last_notified = parse_ts(previous_pr_state.get("last_notified_at") or "")
+    # No prior ping (or a prior send failed — success would have set
+    # `last_notified_at`), or the PR entered a fresh waiting period since
+    # the last ping: fire the initial notification to all current assignees.
+    if last_notified is None or current_waiting_since > last_notified:
         return "initial"
     if now.weekday() < 5 and (now - last_notified).total_seconds() >= APPROVER_FOLLOW_UP_SECONDS:
         return "follow-up"
@@ -1452,57 +1441,25 @@ def send_slack_notification(
     return None
 
 
-def next_assignee_state(
-    repo: str,
-    result: dict[str, Any],
-    assignee: str,
-    kind: str | None,
-    previous_assignee_state: dict[str, Any],
-    send_slack: bool,
-    slack_user_map: dict[str, str],
-    webhook_url: str,
-    now: datetime,
-) -> tuple[dict[str, Any] | None, str | None]:
-    """Compute the next assignee notification state.
-
-    Returns `(state, error)`:
-      - `state` is the assignee state dict to persist, or `None` to skip this
-        assignee entirely (no Slack mapping when a send was due).
-      - `error` is a Slack failure message to surface to the caller, or `None`.
-    """
-    assignee_state: dict[str, Any] = {
-        "last_notified_at": previous_assignee_state.get("last_notified_at") or "",
+def migrated_pr_notification_state(state: dict[str, Any]) -> dict[str, Any]:
+    # Older runs stored `assignee_notifications: {<login>: {last_notified_at}}`
+    # under each PR. Lift the most recent timestamp to PR level so the
+    # follow-up cadence survives the first run after deploy instead of
+    # blasting every waiting PR with a fresh initial ping.
+    if state.get("last_notified_at") or not state.get("assignee_notifications"):
+        return state
+    timestamps = [
+        a.get("last_notified_at")
+        for a in state["assignee_notifications"].values()
+        if isinstance(a, dict) and a.get("last_notified_at")
+    ]
+    if not timestamps:
+        return state
+    return {
+        "waiting_since": state.get("waiting_since") or "",
+        "last_notified_at": max(timestamps),
+        "last_notification_kind": "initial",
     }
-
-    if kind == "skip-initial":
-        # New assignee added mid-waiting-period: don't send an initial
-        # notification, but record `last_notified_at` so the follow-up
-        # cadence kicks in on the normal schedule.
-        assignee_state["last_notified_at"] = format_ts(now)
-        assignee_state["last_notification_kind"] = "initial"
-        return assignee_state, None
-
-    if kind and send_slack:
-        slack_user_id = slack_user_map.get(assignee.lower())
-        if not slack_user_id:
-            return None, None
-        error = send_slack_notification(
-            repo, result, assignee, kind, webhook_url, slack_user_id,
-        )
-        if error:
-            # Leave `last_notified_at` unchanged so the next run retries.
-            return assignee_state, error
-        assignee_state["last_notified_at"] = format_ts(now)
-        assignee_state["last_notification_kind"] = kind
-        return assignee_state, None
-
-    # No notification due (or dry-run with one due): carry forward the prior
-    # kind. For dry-run with a due notification, `last_notified_at` is left
-    # at its prior value, so the next real run will redo the cadence check
-    # and fire if still due.
-    if previous_assignee_state.get("last_notification_kind"):
-        assignee_state["last_notification_kind"] = previous_assignee_state["last_notification_kind"]
-    return assignee_state, None
 
 
 def next_notification_state(
@@ -1521,7 +1478,7 @@ def next_notification_state(
     new_prs: dict[str, Any] = {}
     for number, result in sorted(results.items()):
         pr_key = str(number)
-        previous_pr_state = previous_prs.get(pr_key) or {}
+        previous_pr_state = migrated_pr_notification_state(previous_prs.get(pr_key) or {})
 
         # Scoped run: preserve unrelated PRs' prior state and move on.
         if notification_numbers is not None and number not in notification_numbers:
@@ -1541,46 +1498,39 @@ def next_notification_state(
             continue
 
         facts = result.get("facts") or {}
-        current_pr_state: dict[str, Any] = {
-            "waiting_since": facts.get("waiting_since") or "",
-            "assignee_notifications": {},
-        }
         current_waiting_since = parse_ts(facts.get("waiting_since") or "")
-        previous_notifications = previous_pr_state.get("assignee_notifications") or {}
+        kind = pending_notification_kind(
+            previous_state_exists, previous_pr_state, current_waiting_since, now,
+        )
 
-        for assignee in facts.get("assignees") or []:
-            assignee_key = assignee.lower()
-            previous_assignee_state = (
-                previous_notifications.get(assignee_key)
-                or previous_notifications.get(assignee)
-                or {}
-            )
-            kind = pending_notification_kind(
-                previous_state_exists,
-                previous_pr_state,
-                previous_assignee_state,
-                current_waiting_since,
-                now,
-            )
-            assignee_state, error = next_assignee_state(
-                repo,
-                result,
-                assignee,
-                kind,
-                previous_assignee_state,
-                send_slack=not dry_run,
-                slack_user_map=slack_user_map,
-                webhook_url=webhook_url,
-                now=now,
-            )
-            if assignee_state is None:
-                continue
-            if error:
-                print(f"  warning: {error}", file=sys.stderr)
-            current_pr_state["assignee_notifications"][assignee_key] = assignee_state
+        new_pr_state: dict[str, Any] = {
+            "waiting_since": facts.get("waiting_since") or "",
+            "last_notified_at": previous_pr_state.get("last_notified_at") or "",
+            "last_notification_kind": previous_pr_state.get("last_notification_kind") or "",
+        }
 
-        if current_pr_state["assignee_notifications"]:
-            new_prs[pr_key] = current_pr_state
+        if kind and not dry_run:
+            sent_any = False
+            for assignee in facts.get("assignees") or []:
+                slack_user_id = slack_user_map.get(assignee.lower())
+                if not slack_user_id:
+                    continue
+                error = send_slack_notification(
+                    repo, result, assignee, kind, webhook_url, slack_user_id,
+                )
+                if error:
+                    print(f"  warning: {error}", file=sys.stderr)
+                else:
+                    sent_any = True
+            # Bump the cadence as soon as at least one assignee was pinged.
+            # If every assignee failed, leave `last_notified_at` alone so the
+            # next run retries.
+            if sent_any:
+                new_pr_state["last_notified_at"] = format_ts(now)
+                new_pr_state["last_notification_kind"] = kind
+
+        if new_pr_state["last_notified_at"]:
+            new_prs[pr_key] = new_pr_state
     return {"version": 1, "prs": new_prs}
 
 
