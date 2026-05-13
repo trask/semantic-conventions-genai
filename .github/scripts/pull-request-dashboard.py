@@ -201,7 +201,7 @@ Use these labels:
 
 Guidance:
   - Default heuristic: whoever commented last has passed the ball to the other
-    route. If the latest comment is from a reviewer/approver, the author owes a
+    side. If the latest comment is from a reviewer/approver, the author owes a
     response (classify as author). If the latest comment is from the author,
     the reviewer owes a response (classify as reviewer).
   - This applies even to optional suggestions, "for ideas" links, references,
