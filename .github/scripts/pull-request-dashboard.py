@@ -887,23 +887,12 @@ def stable_facts(facts: dict[str, Any]) -> dict[str, Any]:
 
 def stored_result(result: dict[str, Any]) -> dict[str, Any]:
     facts = result.get("facts") or {}
-    # Persist a compact `thread_action_counts` summary so the diagnostics
-    # section can keep reporting accurate per-route thread counts for
-    # cached PRs, even though we don't persist the full `classifications`
-    # list (which would balloon the dashboard-state marker).
-    classifications = result.get("classifications") or []
-    counts = (
-        result.get("thread_action_counts")
-        if classifications == [] and result.get("thread_action_counts")
-        else dict(action_counts(classifications))
-    )
     return {
         "pr_number": result.get("pr_number"),
         "pr_url": result.get("pr_url") or "",
         "failed": bool(result.get("failed")),
         "route": result.get("route") or "unknown",
         "facts": stable_facts(facts),
-        "thread_action_counts": counts,
     }
 
 
@@ -1837,15 +1826,7 @@ def render_diagnostics_section(results: dict[int, dict[str, Any]]) -> list[str]:
     for number in sorted(results, reverse=True):
         result = results[number]
         facts = result.get("facts") or {}
-        classifications = result.get("classifications") or []
-        # Cached results from the dashboard-state marker drop the full
-        # `classifications` list to keep the marker small; fall back to
-        # the persisted `thread_action_counts` summary so diagnostics
-        # still reflect the cached route's underlying thread counts.
-        if classifications:
-            counts = action_counts(classifications)
-        else:
-            counts = result.get("thread_action_counts") or action_counts([])
+        counts = action_counts(result.get("classifications") or [])
         data_lines.append(f"PR #{number}")
         data_lines.append(
             f"facts: approved={facts.get('approved')} conflicts={facts.get('conflicts')} "
@@ -1854,7 +1835,7 @@ def render_diagnostics_section(results: dict[int, dict[str, Any]]) -> list[str]:
             f"last_activity_age={facts.get('last_activity_age')}"
         )
         data_lines.append("threads: " + " ".join(f"{k}={v}" for k, v in counts.items()))
-        for c in classifications:
+        for c in result.get("classifications") or []:
             decision = c.get("decision") or {}
             reason = (decision.get("reason") or "").replace("\n", " ")
             data_lines.append(f"llm: {c.get('thread_id')} -> {decision.get('thread_action')} ({reason})")
