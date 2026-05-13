@@ -903,7 +903,13 @@ def stored_result(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def refresh_result_ages(result: dict[str, Any]) -> dict[str, Any]:
-    facts = result.get("facts") or {}
+    # Copy the result so we don't poison cached dashboard-state dicts with
+    # volatile age fields (`waiting_age`, `seconds_since_*`). Those fields
+    # would otherwise leak into the next persisted state marker and make
+    # the cached blob change on every render even when the underlying PR
+    # data is unchanged.
+    refreshed = dict(result)
+    facts = dict(result.get("facts") or {})
     waiting_since = parse_ts(facts.get("waiting_since") or "")
     if waiting_since is not None:
         facts["seconds_since_waiting"] = seconds_since(waiting_since)
@@ -912,10 +918,10 @@ def refresh_result_ages(result: dict[str, Any]) -> dict[str, Any]:
     if last_activity is not None:
         facts["seconds_since_last_activity"] = seconds_since(last_activity)
         facts["last_activity_age"] = activity_age(last_activity)
-    result["facts"] = facts
-    result.setdefault("classifications", [])
-    result.setdefault("threads", [])
-    return result
+    refreshed["facts"] = facts
+    refreshed.setdefault("classifications", [])
+    refreshed.setdefault("threads", [])
+    return refreshed
 
 
 def results_from_dashboard_state(state: dict[str, Any], open_pr_numbers: set[int]) -> dict[int, dict[str, Any]]:
