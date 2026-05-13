@@ -1278,45 +1278,6 @@ def route_pr(facts: dict[str, Any], classifications: list[dict[str, Any]]) -> st
     return "approver"
 
 
-def build_pr_result_by_number(
-    repo: str,
-    owner: str,
-    repo_name: str,
-    number: int,
-    reviewers: set[str],
-    model: str,
-) -> dict[str, Any] | None:
-    try:
-        pr = gh_pr_view(repo, number)
-    except TransientGhError as e:
-        return {
-            "pr_number": number,
-            "failed": True,
-            "facts": {},
-            "threads": [],
-            "classifications": [],
-            "route": "transient-failure",
-            "error": repr(e),
-        }
-    except Exception as e:
-        # Match the boundary behavior of `build_pr_result`: one bad
-        # trigger PR must not break the dashboard run.
-        print(f"  warning: PR #{number} failed to load:", file=sys.stderr)
-        traceback.print_exc()
-        return {
-            "pr_number": number,
-            "failed": True,
-            "facts": {},
-            "threads": [],
-            "classifications": [],
-            "route": "unknown",
-            "error": repr(e),
-        }
-    if pr.get("state") != "OPEN" or pr.get("isDraft"):
-        return None
-    return build_pr_result(repo, owner, repo_name, {"number": number}, reviewers, model)
-
-
 def threads_by_id(threads: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return {t["thread_id"]: t for t in threads}
 
@@ -1800,10 +1761,12 @@ def build_pr_result(
     pr_summary: dict[str, Any],
     reviewers: set[str],
     model: str,
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
     number = pr_summary["number"]
     try:
         raw = fetch_pr_raw(repo, owner, repo_name, pr_summary)
+        if raw["pr"].get("state") != "OPEN" or raw["pr"].get("isDraft"):
+            return None
         author = effective_author(raw)
         events = normalize_events(raw, author, reviewers)
         facts = compute_facts(raw, author, events)
@@ -1876,7 +1839,7 @@ def compute_pr_results(
     if pr_number and dashboard_state.get("_loaded_from_dashboard"):
         print(f"refreshing dashboard state for PR #{pr_number}", file=sys.stderr)
         results = results_from_dashboard_state(dashboard_state, open_pr_numbers)
-        trigger_pr_result = build_pr_result_by_number(repo, owner, repo_name, pr_number, reviewers, model)
+        trigger_pr_result = build_pr_result(repo, owner, repo_name, {"number": pr_number}, reviewers, model)
         if trigger_pr_result is None:
             results.pop(pr_number, None)
         else:
@@ -1909,6 +1872,10 @@ def compute_pr_results(
                 # bugs that escape the inner handler. One bad future must
                 # not break the whole dashboard run.
                 res = {"pr_number": pr["number"], "failed": True, "route": "unknown", "error": repr(e)}
+            if res is None:
+                # PR was closed or converted to draft between list_open_prs
+                # and the worker run; skip it.
+                continue
             results[pr["number"]] = res
             counts = action_counts(res.get("classifications") or [])
             print(
