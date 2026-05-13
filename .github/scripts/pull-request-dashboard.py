@@ -1313,7 +1313,32 @@ def build_pr_result_by_number(
     reviewers: set[str],
     model: str,
 ) -> dict[str, Any] | None:
-    pr = gh_pr_view(repo, number)
+    try:
+        pr = gh_pr_view(repo, number)
+    except TransientGhError as e:
+        return {
+            "pr_number": number,
+            "failed": True,
+            "facts": {},
+            "threads": [],
+            "classifications": [],
+            "route": "transient-failure",
+            "error": repr(e),
+        }
+    except Exception as e:
+        # Match the boundary behavior of `build_pr_result`: one bad
+        # trigger PR must not break the dashboard run.
+        print(f"  warning: PR #{number} failed to load:", file=sys.stderr)
+        traceback.print_exc()
+        return {
+            "pr_number": number,
+            "failed": True,
+            "facts": {},
+            "threads": [],
+            "classifications": [],
+            "route": "unknown",
+            "error": repr(e),
+        }
     if pr.get("state") != "OPEN" or pr.get("isDraft"):
         return None
     return build_pr_result(repo, owner, repo_name, {"number": number}, reviewers, model)
