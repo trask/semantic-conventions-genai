@@ -1395,9 +1395,7 @@ def slack_message(repo: str, result: dict[str, Any], assignee_mention: str, kind
     url = result.get("pr_url") or f"https://github.com/{repo}/pull/{number}"
     if kind == "follow-up":
         waiting_age = activity_age(parse_ts(facts.get("waiting_since") or ""))
-        if waiting_age == "?":
-            waiting_age = "24h"
-        lead = f"has been waiting on approvers for {waiting_age}"
+        lead = f"is waiting on approvers for {waiting_age}"
     else:
         lead = "moved to waiting on approvers"
     return f"{assignee_mention} <{url}|PR #{number}> {lead}"
