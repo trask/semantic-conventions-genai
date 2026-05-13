@@ -1517,10 +1517,13 @@ def pending_notification_kind(
             return None
         # New assignee added partway through an already-tracked waiting
         # period: the rest of the PR was already in flight, so don't fire
-        # an "initial" notification for them — they'll get follow-ups on
-        # the normal cadence.
+        # an "initial" notification for them. Seed the follow-up cadence
+        # from now so they still get pinged on the normal 24h schedule
+        # rather than being silently dropped (an empty assignee state would
+        # later look like a "seen" period and suppress notifications
+        # indefinitely until `waiting_since` changes).
         if previous_pr_state and not previous_assignee_state and is_same_waiting_period:
-            return None
+            return "skip-initial"
         return "initial"
     if current_waiting_since > last_notified:
         return "initial"
@@ -1569,6 +1572,15 @@ def next_assignee_state(
     assignee_state: dict[str, Any] = {
         "last_notified_at": previous_assignee_state.get("last_notified_at") or "",
     }
+
+    if kind == "skip-initial":
+        # New assignee added mid-waiting-period: don't send an initial
+        # notification, but record `last_notified_at` so the follow-up
+        # cadence kicks in on the normal schedule.
+        assignee_state["last_notified_at"] = format_ts(now)
+        assignee_state["last_notification_kind"] = "initial"
+        assignee_state["notification_pending"] = False
+        return assignee_state, None
 
     if kind and send_slack:
         slack_user_id = slack_user_map.get(assignee.lower())
