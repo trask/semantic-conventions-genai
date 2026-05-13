@@ -1722,48 +1722,6 @@ def prepend_slack_notification_warning(md: str, errors: list[str], repo: str) ->
     return "\n".join(lines) + "\n\n" + md
 
 
-def fetch_workflow_failure_issues(repo: str) -> list[dict[str, Any]]:
-    proc = subprocess.run(
-        [
-            "gh", "issue", "list", "--repo", repo,
-            "--search", "in:title Workflow failed:",
-            "--state", "open",
-            "--json", "number,title,url,updatedAt,comments,author",
-            "--limit", "100",
-        ],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    if proc.returncode != 0:
-        print(f"  warning: failed to fetch workflow failure issues: {proc.stderr}", file=sys.stderr)
-        return []
-    try:
-        issues = json.loads(proc.stdout or "[]")
-    except json.JSONDecodeError as e:
-        print(f"  warning: failed to parse workflow failure issues JSON: {e}", file=sys.stderr)
-        return []
-    return [i for i in issues if (i.get("title") or "").startswith("Workflow failed:")]
-
-
-def render_workflow_failure_section(issues: list[dict[str, Any]]) -> list[str]:
-    if not issues:
-        return []
-    issues = sorted(issues, key=lambda i: i.get("updatedAt") or "", reverse=True)
-    lines = ["## Workflow failure tracking issues", ""]
-    lines.append("| Issue | Comments | Updated |")
-    lines.append("|---|---|---|")
-    for i in issues:
-        title = _md_escape(i.get("title", ""))
-        url = i.get("url", "")
-        comments = len(i.get("comments") or [])
-        updated = (i.get("updatedAt") or "")[:10]
-        lines.append(f"| [{title}]({url}) | {comments} | {updated} |")
-    lines.append("")
-    return lines
-
-
 def render_draft_pr_section(prs: list[dict[str, Any]]) -> list[str]:
     drafts = [p for p in prs if p.get("isDraft")]
     if not drafts:
@@ -1854,7 +1812,6 @@ def render_pr_tables(
     prs: list[dict[str, Any]],
     results: dict[int, dict[str, Any]],
     repo: str,
-    workflow_issues: list[dict[str, Any]] | None = None,
 ) -> str:
     source_url = f"https://github.com/{repo}/blob/main/.github/scripts/pull-request-dashboard.py"
     refresh_url = f"https://github.com/{repo}/actions/workflows/pr-review-dashboard.yml"
@@ -1909,7 +1866,6 @@ def render_pr_tables(
             )
         out.append("")
 
-    out.extend(render_workflow_failure_section(workflow_issues or []))
     out.extend(render_draft_pr_section(prs))
     out.extend(render_diagnostics_section(results))
     out.append(f"_Approvers may [force a refresh]({refresh_url})._")
@@ -2086,11 +2042,10 @@ def render_dashboard_body(
     prs: list[dict[str, Any]],
     results: dict[int, dict[str, Any]],
     repo: str,
-    workflow_issues: list[dict[str, Any]],
     dashboard_state: dict[str, Any],
     notification_state: dict[str, Any],
 ) -> str:
-    md = render_pr_tables(prs, results, repo, workflow_issues)
+    md = render_pr_tables(prs, results, repo)
     md = prepend_slack_notification_warning(
         md,
         notification_state.get("_slack_notification_errors") or [],
@@ -2148,7 +2103,6 @@ def main() -> int:
     # newer state on the next run.
     initial_body = fetch_dashboard_body(repo, DEFAULT_DASHBOARD_TITLE, DEFAULT_DASHBOARD_LABEL)[1]
     previous_state = notification_state_from_body(initial_body)
-    workflow_issues = fetch_workflow_failure_issues(repo)
     notification_numbers = {args.pr_number} if args.pr_number else None
     notification_state = next_notification_state(
         repo,
@@ -2190,7 +2144,6 @@ def main() -> int:
         prs,
         calculation.results,
         repo,
-        workflow_issues,
         calculation.dashboard_state,
         notification_state,
     )
