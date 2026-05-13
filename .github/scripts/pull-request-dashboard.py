@@ -2169,7 +2169,16 @@ def main() -> int:
         open_pr_numbers,
     )
 
-    if dashboard_state_unchanged and not notification_state_changed and not notification_state.get("_slack_notification_errors"):
+    has_stale_slack_warning = (
+        "Slack notifications for assignees are currently failing." in base_body
+        and not notification_state.get("_slack_notification_errors")
+    )
+    if (
+        dashboard_state_unchanged
+        and not notification_state_changed
+        and not notification_state.get("_slack_notification_errors")
+        and not has_stale_slack_warning
+    ):
         if args.dry_run:
             output_path = Path(DRY_RUN_OUTPUT)
             output_path.write_text(base_body, encoding="utf-8")
