@@ -334,6 +334,59 @@ def gh_api(path: str, paginate: bool = False, token: str | None = None) -> Any:
     return data
 
 
+def github_rest_json(
+    path: str,
+    method: str = "GET",
+    body: dict[str, Any] | None = None,
+    etag: str = "",
+    allowed_statuses: frozenset[int] | set[int] = frozenset({200}),
+) -> tuple[int, Any, Any]:
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or ""
+    api_url = (os.environ.get("GITHUB_API_URL") or "https://api.github.com").rstrip("/")
+    payload = json.dumps(body).encode("utf-8") if body is not None else None
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "semantic-conventions-genai-dashboard",
+    }
+    if payload is not None:
+        headers["Content-Type"] = "application/json; charset=utf-8"
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    if etag:
+        headers["If-Match"] = etag
+    req = urllib.request.Request(
+        f"{api_url}/{path.lstrip('/')}",
+        data=payload,
+        headers=headers,
+        method=method,
+    )
+    last_error = ""
+    for attempt in range(GH_RETRY_ATTEMPTS):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as response:
+                text = response.read().decode("utf-8", errors="replace")
+                data = json.loads(text) if text.strip() else None
+                return response.status, data, response.headers
+        except urllib.error.HTTPError as e:
+            text = e.read().decode("utf-8", errors="replace")
+            if e.code in allowed_statuses:
+                data = json.loads(text) if text.strip() else None
+                return e.code, data, e.headers
+            last_error = f"HTTP {e.code}: {text}"
+            if attempt == GH_RETRY_ATTEMPTS - 1 or e.code not in (429, 500, 502, 503, 504):
+                break
+            sleep_for_retry(attempt)
+        except urllib.error.URLError as e:
+            last_error = repr(e)
+            if attempt == GH_RETRY_ATTEMPTS - 1:
+                break
+            sleep_for_retry(attempt)
+    if "HTTP 5" in last_error or "timed out" in last_error.lower():
+        raise TransientGhError(f"GitHub REST {method} {path} failed: {last_error}")
+    raise RuntimeError(f"GitHub REST {method} {path} failed: {last_error}")
+
+
 def find_dashboard_issue(repo: str, title: str, label: str) -> dict[str, Any] | None:
     encoded_label = urllib.parse.quote(label, safe="")
     issues = gh_api(f"repos/{repo}/issues?state=open&labels={encoded_label}&per_page=100", paginate=True)
@@ -348,11 +401,12 @@ def find_dashboard_issue(repo: str, title: str, label: str) -> dict[str, Any] | 
     return gh_api(f"repos/{repo}/issues/{issue['number']}")
 
 
-def fetch_dashboard_body(repo: str, title: str, label: str) -> tuple[int | None, str]:
+def fetch_dashboard_body(repo: str, title: str, label: str) -> tuple[int | None, str, str]:
     issue = find_dashboard_issue(repo, title, label)
     if issue is None:
-        return None, ""
-    return int(issue["number"]), issue.get("body") or ""
+        return None, "", ""
+    _, current_issue, headers = github_rest_json(f"repos/{repo}/issues/{issue['number']}")
+    return int(current_issue["number"]), current_issue.get("body") or "", headers.get("ETag") or ""
 
 
 def write_dashboard_issue(
@@ -362,8 +416,9 @@ def write_dashboard_issue(
     body: str,
     base_number: int | None,
     base_body: str,
+    base_etag: str,
 ) -> bool:
-    current_number, current_body = fetch_dashboard_body(repo, title, label)
+    current_number, current_body, _ = fetch_dashboard_body(repo, title, label)
     if base_number is not None:
         if current_number != base_number:
             print("dashboard issue changed before update; skipping stale write", file=sys.stderr)
@@ -371,8 +426,20 @@ def write_dashboard_issue(
         if current_body != base_body:
             print(f"dashboard issue #{base_number} was updated by another run; skipping stale write", file=sys.stderr)
             return False
+        if not base_etag:
+            print(f"dashboard issue #{base_number} did not return an ETag; skipping stale write", file=sys.stderr)
+            return False
         print(f"updating existing dashboard issue #{base_number}", file=sys.stderr)
-        run_gh(["gh", "issue", "edit", str(base_number), "--repo", repo, "--body-file", "-"], input_text=body)
+        status, _, _ = github_rest_json(
+            f"repos/{repo}/issues/{base_number}",
+            method="PATCH",
+            body={"body": body},
+            etag=base_etag,
+            allowed_statuses={200, 412},
+        )
+        if status == 412:
+            print(f"dashboard issue #{base_number} was updated by another run; skipping stale write", file=sys.stderr)
+            return False
         return True
     if current_number is not None:
         print(f"dashboard issue #{current_number} was created by another run; skipping stale create", file=sys.stderr)
@@ -2093,7 +2160,11 @@ def main() -> int:
     notification_state_changed = (notification_state.get("prs") or {}) != (previous_state.get("prs") or {})
 
     # Re-fetch as the CAS reference. From here on, everything is local.
-    dashboard_issue_number, base_body = fetch_dashboard_body(repo, DEFAULT_DASHBOARD_TITLE, DEFAULT_DASHBOARD_LABEL)
+    dashboard_issue_number, base_body, base_etag = fetch_dashboard_body(
+        repo,
+        DEFAULT_DASHBOARD_TITLE,
+        DEFAULT_DASHBOARD_LABEL,
+    )
     calculation, dashboard_state_unchanged = reconcile_with_latest_dashboard(
         calculation,
         args.pr_number,
@@ -2128,6 +2199,7 @@ def main() -> int:
             md,
             dashboard_issue_number,
             base_body,
+            base_etag,
         )
         if not published:
             # The issue body write lost the CAS to a concurrent writer.
