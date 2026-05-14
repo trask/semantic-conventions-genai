@@ -113,6 +113,7 @@ runs when no underlying PR data has changed.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -148,6 +149,13 @@ GH_RETRY_DELAY_SECONDS = 1.5
 # subprocess timeout (seconds) for a single `copilot` invocation classifying
 # one discussion thread.
 LLM_THREAD_TIMEOUT_SECONDS = 180
+
+# Per-PR thread classification cache. Keyed by sha256 of the thread JSON
+# only (not the full prompt), so events that change PR-level facts but not
+# thread content (e.g. pull_request_review.submitted) re-use prior
+# classifications. The workflow restores/saves this directory via
+# actions/cache scoped to TRIGGER_PR_NUMBER.
+CLASSIFICATION_CACHE_DIR = Path(".cache/pr-classifications")
 # Per-thread, keep at most this many of the most recent comments when
 # building the LLM prompt (older comments are dropped, not truncated).
 THREAD_RECENT_COMMENTS_LIMIT = 20
@@ -369,7 +377,7 @@ def gh_pr_view(repo: str, number: int) -> dict[str, Any]:
     fields = ",".join([
         "number", "title", "url", "author", "state", "isDraft",
         "mergeable", "mergeStateStatus", "createdAt", "updatedAt",
-        "labels", "reviewDecision", "reviewRequests", "assignees",
+        "reviewDecision", "assignees",
         "additions", "deletions", "changedFiles", "baseRefName",
         "headRefOid", "body",
     ])
@@ -1190,6 +1198,44 @@ def run_llm_for_thread(
     }
 
 
+def thread_cache_key(thread: dict[str, Any]) -> str:
+    payload = json.dumps(thread, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def load_classification_cache(pr_number: int) -> dict[str, dict[str, Any]]:
+    path = CLASSIFICATION_CACHE_DIR / f"{pr_number}.json"
+    if not path.exists():
+        return {}
+    # A corrupt cache file must not break the dashboard run. Log and start
+    # fresh; the next save replaces the bad file.
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"  warning: ignoring unreadable classification cache {path}: {e!r}", file=sys.stderr)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_classification_cache(pr_number: int, cache: dict[str, dict[str, Any]]) -> None:
+    CLASSIFICATION_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    path = CLASSIFICATION_CACHE_DIR / f"{pr_number}.json"
+    path.write_text(json.dumps(cache, sort_keys=True, indent=2), encoding="utf-8")
+
+
+def prune_classification_cache(open_pr_numbers: set[int]) -> None:
+    # Per-event runs only touch one PR, so they can't safely prune. The
+    # full-rebuild path knows the complete open-PR set and is the only
+    # place where files for closed/merged PRs can be deleted.
+    if not CLASSIFICATION_CACHE_DIR.exists():
+        return
+    for path in CLASSIFICATION_CACHE_DIR.glob("*.json"):
+        if not path.stem.isdigit():
+            continue
+        if int(path.stem) not in open_pr_numbers:
+            path.unlink()
+
+
 def classify_threads(
     repo: str,
     number: int,
@@ -1198,18 +1244,33 @@ def classify_threads(
     threads: list[dict[str, Any]],
     model: str,
 ) -> list[dict[str, Any]]:
+    cache_in = load_classification_cache(number)
+    # Only keys for threads we actually saw this run end up in cache_out,
+    # so entries for removed/renamed threads are pruned automatically.
+    cache_out: dict[str, dict[str, Any]] = {}
     classifications: list[dict[str, Any]] = []
     for thread in threads:
+        key = thread_cache_key(thread)
+        cached = cache_in.get(key)
+        if cached:
+            record = dict(cached)
+            # thread_id/thread_kind belong to the current thread instance,
+            # not the cached classification.
+            record["thread_id"] = thread["thread_id"]
+            record["thread_kind"] = thread["thread_kind"]
+            classifications.append(record)
+            cache_out[key] = cached
+            continue
         try:
-            classifications.append(run_llm_for_thread(repo, number, pr, facts, thread, model))
+            record = run_llm_for_thread(repo, number, pr, facts, thread, model)
         except subprocess.TimeoutExpired:
-            classifications.append({
+            record = {
                 "thread_id": thread["thread_id"],
                 "thread_kind": thread["thread_kind"],
                 "failed": True,
                 "decision": {"thread_action": "unclear", "reason": "LLM timeout"},
                 "error": "timeout",
-            })
+            }
         except Exception as e:
             # Boundary: one bad thread must not break the PR. Log the
             # traceback so genuine bugs are visible in workflow logs.
@@ -1218,13 +1279,18 @@ def classify_threads(
                 file=sys.stderr,
             )
             traceback.print_exc()
-            classifications.append({
+            record = {
                 "thread_id": thread["thread_id"],
                 "thread_kind": thread["thread_kind"],
                 "failed": True,
                 "decision": {"thread_action": "unclear", "reason": f"LLM failed: {e!r}"},
                 "error": repr(e),
-            })
+            }
+        classifications.append(record)
+        # Only cache clean results so transient LLM failures don't get sticky.
+        if not record.get("failed"):
+            cache_out[key] = record
+    save_classification_cache(number, cache_out)
     return classifications
 
 
@@ -1514,6 +1580,7 @@ def next_notification_state(
             for assignee in facts.get("assignees") or []:
                 slack_user_id = slack_user_map.get(assignee.lower())
                 if not slack_user_id:
+                    print(f"  warning: no Slack user mapping for @{assignee}", file=sys.stderr)
                     continue
                 error = send_slack_notification(
                     repo, result, assignee, kind, webhook_url, slack_user_id,
@@ -1893,28 +1960,19 @@ def main() -> int:
     ap.add_argument("--jobs", type=int, default=DEFAULT_JOBS, help=f"parallel workers (default: {DEFAULT_JOBS})")
     ap.add_argument("--model", default=DEFAULT_MODEL, help=f"copilot model (default: {DEFAULT_MODEL})")
     ap.add_argument("--pr-number", type=int, help="only refresh dashboard state for this PR")
-    # Trigger metadata is currently only used for logging. A follow-up will
-    # use it to skip LLM thread classification for events that cannot have
-    # changed thread content (e.g. pull_request_review.submitted, label
-    # toggles).
-    ap.add_argument("--trigger-event", help="event name that triggered this run (e.g. pull_request_review)")
-    ap.add_argument("--trigger-action", help="event activity type (e.g. submitted)")
     args = ap.parse_args()
-    if args.trigger_event or args.trigger_action:
-        print(f"trigger: event={args.trigger_event or '-'} action={args.trigger_action or '-'}", file=sys.stderr)
 
     repo = detect_repo()
     owner, repo_name = repo.split("/", 1)
 
     prs = list_open_prs(repo)
     open_pr_numbers = {p["number"] for p in prs}
+    if args.pr_number is None:
+        prune_classification_cache(open_pr_numbers)
     drafts = [p for p in prs if p.get("isDraft")]
     non_drafts = [p for p in prs if not p.get("isDraft")]
-    if drafts:
-        print(f"skipping {len(drafts)} draft PR(s)", file=sys.stderr)
 
     reviewers = load_reviewer_set(owner)
-    print(f"reviewer set ({len(reviewers)})", file=sys.stderr)
 
     calculation = compute_pr_results(
         repo,
@@ -1963,7 +2021,10 @@ def main() -> int:
             output_path = Path(DRY_RUN_OUTPUT)
             output_path.write_text(base_body, encoding="utf-8")
             print(f"wrote dry-run dashboard to {output_path.resolve()}", file=sys.stderr)
-        print(f"PR #{args.pr_number} dashboard state unchanged", file=sys.stderr)
+        if args.pr_number:
+            print(f"PR #{args.pr_number} dashboard state unchanged", file=sys.stderr)
+        else:
+            print("dashboard state unchanged", file=sys.stderr)
         return 0
 
     md = render_dashboard_body(

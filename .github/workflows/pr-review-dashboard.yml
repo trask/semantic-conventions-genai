@@ -7,19 +7,13 @@ on:
   workflow_dispatch:
   pull_request_target:
     types:
-      - assigned
       - closed
       - converted_to_draft
       - edited
-      - labeled
       - opened
       - ready_for_review
       - reopened
-      - review_request_removed
-      - review_requested
       - synchronize
-      - unassigned
-      - unlabeled
   issue_comment:
     types: [created, edited, deleted]
   # pull_request_review and pull_request_review_comment cannot be triggered
@@ -129,11 +123,38 @@ jobs:
             echo "action=$trigger_action"
           } >> "$GITHUB_OUTPUT"
 
+          # Echo the resolved trigger to the job log for at-a-glance diagnostics.
+          echo "trigger: pr=${pr_number:--} event=${trigger_event:--} action=${trigger_action:--}"
+
       - uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
         id: otelbot-token
         with:
           app-id: ${{ vars.OTELBOT_APP_ID }}
           private-key: ${{ secrets.OTELBOT_PRIVATE_KEY }}
+
+      - name: Restore per-PR classification cache
+        # Scoped to one PR so concurrent PR events don't overwrite each
+        # other's work. Cache entries are immutable, so the save key uses
+        # a rolling suffix and restore-keys picks the most recent snapshot.
+        if: steps.trigger.outputs.pr_number != ''
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: .cache/pr-classifications
+          key: pr-classifications-${{ steps.trigger.outputs.pr_number }}-${{ github.run_id }}
+          restore-keys: |
+            pr-classifications-${{ steps.trigger.outputs.pr_number }}-
+
+      - name: Restore shared full-rebuild classification cache
+        # Single cache shared across the hourly schedule and manual full
+        # rebuilds, so only the few PRs that changed since the last
+        # rebuild pay the LLM cost. Same rolling-key pattern as above.
+        if: steps.trigger.outputs.pr_number == ''
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: .cache/pr-classifications
+          key: pr-classifications-all-${{ github.run_id }}
+          restore-keys: |
+            pr-classifications-all-
 
       - name: Install Copilot CLI
         run: |
@@ -144,8 +165,6 @@ jobs:
       - name: Generate and update dashboard
         env:
           TRIGGER_PR_NUMBER: ${{ steps.trigger.outputs.pr_number }}
-          TRIGGER_EVENT: ${{ steps.trigger.outputs.event }}
-          TRIGGER_ACTION: ${{ steps.trigger.outputs.action }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # needed for reading approver team membership (org:read)
           OTELBOT_TOKEN: ${{ steps.otelbot-token.outputs.token }}
@@ -158,12 +177,6 @@ jobs:
           args=()
           if [[ -n "${TRIGGER_PR_NUMBER:-}" ]]; then
             args+=(--pr-number "$TRIGGER_PR_NUMBER")
-          fi
-          if [[ -n "${TRIGGER_EVENT:-}" ]]; then
-            args+=(--trigger-event "$TRIGGER_EVENT")
-          fi
-          if [[ -n "${TRIGGER_ACTION:-}" ]]; then
-            args+=(--trigger-action "$TRIGGER_ACTION")
           fi
 
           python3 .github/scripts/pull-request-dashboard.py "${args[@]}"
