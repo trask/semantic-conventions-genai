@@ -2080,8 +2080,12 @@ def main() -> int:
     )
     notification_state_changed = (notification_state.get("prs") or {}) != (previous_state.get("prs") or {})
 
-    # Re-fetch as the best-effort stale-write reference. From here on,
-    # everything is local.
+    # Re-fetch just before rendering/publishing so a concurrent dashboard
+    # edit made during the expensive PR processing phase is detected and
+    # retried. This is intentionally best-effort: another edit can still
+    # land in the small gap between write_dashboard_issue()'s final body
+    # check and `gh issue edit`, but the next run will render from state
+    # again and repair a temporarily stale issue body.
     dashboard_issue_number, base_body = fetch_dashboard_body(
         repo,
         DEFAULT_DASHBOARD_TITLE,
@@ -2123,7 +2127,8 @@ def main() -> int:
             base_body,
         )
         if not published:
-            # The issue body write lost the CAS to a concurrent writer.
+            # A concurrent writer updated or created the issue before our
+            # best-effort publish check.
             # Snapshot notification state for the retry, but do not save
             # dashboard state to the orphan branch for a view we never wrote.
             if args.prior_notification_state:
