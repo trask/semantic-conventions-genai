@@ -335,12 +335,12 @@ def gh_api(path: str, paginate: bool = False, token: str | None = None) -> Any:
     return data
 
 
-def github_rest_json(
-    path: str,
+def github_issue_request(
+    repo: str,
+    number: int,
     method: str = "GET",
     body: dict[str, Any] | None = None,
     etag: str = "",
-    allowed_statuses: frozenset[int] | set[int] = frozenset({200}),
 ) -> tuple[int, Any, Any]:
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or ""
     api_url = (os.environ.get("GITHUB_API_URL") or "https://api.github.com").rstrip("/")
@@ -357,7 +357,7 @@ def github_rest_json(
     if etag:
         headers["If-Match"] = etag
     req = urllib.request.Request(
-        f"{api_url}/{path.lstrip('/')}",
+        f"{api_url}/repos/{repo}/issues/{number}",
         data=payload,
         headers=headers,
         method=method,
@@ -371,7 +371,7 @@ def github_rest_json(
                 return response.status, data, response.headers
         except urllib.error.HTTPError as e:
             text = e.read().decode("utf-8", errors="replace")
-            if e.code in allowed_statuses:
+            if method == "PATCH" and e.code == 412:
                 data = json.loads(text) if text.strip() else None
                 return e.code, data, e.headers
             last_error = f"HTTP {e.code}: {text}"
@@ -384,8 +384,13 @@ def github_rest_json(
                 break
             sleep_for_retry(attempt)
     if "HTTP 5" in last_error or "timed out" in last_error.lower():
-        raise TransientGhError(f"GitHub REST {method} {path} failed: {last_error}")
-    raise RuntimeError(f"GitHub REST {method} {path} failed: {last_error}")
+        raise TransientGhError(f"GitHub issue {method} #{number} failed: {last_error}")
+    raise RuntimeError(f"GitHub issue {method} #{number} failed: {last_error}")
+
+
+def patch_dashboard_issue_body_if_match(repo: str, number: int, body: str, etag: str) -> bool:
+    status, _, _ = github_issue_request(repo, number, method="PATCH", body={"body": body}, etag=etag)
+    return status == 200
 
 
 def find_dashboard_issue(repo: str, title: str, label: str) -> dict[str, Any] | None:
@@ -406,7 +411,7 @@ def fetch_dashboard_body(repo: str, title: str, label: str) -> tuple[int | None,
     issue = find_dashboard_issue(repo, title, label)
     if issue is None:
         return None, "", ""
-    _, current_issue, headers = github_rest_json(f"repos/{repo}/issues/{issue['number']}")
+    _, current_issue, headers = github_issue_request(repo, int(issue["number"]))
     return int(current_issue["number"]), current_issue.get("body") or "", headers.get("ETag") or ""
 
 
@@ -431,14 +436,7 @@ def write_dashboard_issue(
             print(f"dashboard issue #{base_number} did not return an ETag; skipping stale write", file=sys.stderr)
             return False
         print(f"updating existing dashboard issue #{base_number}", file=sys.stderr)
-        status, _, _ = github_rest_json(
-            f"repos/{repo}/issues/{base_number}",
-            method="PATCH",
-            body={"body": body},
-            etag=base_etag,
-            allowed_statuses={200, 412},
-        )
-        if status == 412:
+        if not patch_dashboard_issue_body_if_match(repo, base_number, body, base_etag):
             print(f"dashboard issue #{base_number} was updated by another run; skipping stale write", file=sys.stderr)
             return False
         return True
