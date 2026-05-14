@@ -857,8 +857,8 @@ def main() -> int:
         required=True,
         help="git branch used for workflow state",
     )
-    parser.add_argument("--model", default=DEFAULT_MODEL, help=f"copilot model (default: {DEFAULT_MODEL})")
     parser.add_argument("--pr-number", type=int, help="only refresh dashboard state for this PR")
+    parser.add_argument("--model", default=DEFAULT_MODEL, help=f"copilot model (default: {DEFAULT_MODEL})")
     args = parser.parse_args()
     with state_branch.temporary_state_dir() as state_dir:
         set_state_dir(state_dir)
