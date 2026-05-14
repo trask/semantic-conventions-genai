@@ -1999,7 +1999,6 @@ def main() -> int:
     open_pr_numbers = {p["number"] for p in prs}
     if args.pr_number is None:
         prune_classification_cache(open_pr_numbers)
-    drafts = [p for p in prs if p.get("isDraft")]
     non_drafts = [p for p in prs if not p.get("isDraft")]
 
     reviewers = load_reviewer_set(owner)
