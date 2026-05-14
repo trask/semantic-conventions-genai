@@ -30,9 +30,7 @@ deterministically lose the push and the workflow re-runs the script
 against the freshly fetched state.
 
 The dashboard issue body is rendered fresh each run; no state markers are
-embedded in it. On the first run after deploy `load_notification_state_file`
-falls back once to the legacy `<!-- pr-review-dashboard-state: ... -->` body
-marker so the existing Slack ledger is migrated to the file.
+embedded in it.
 
 A run flows like this:
 
@@ -42,7 +40,7 @@ A run flows like this:
        single-PR + cache hit:  reuse cached results, recompute only the trigger PR
        otherwise:              rebuild all PRs in parallel
        v
-  load_notification_state_file       (or legacy body marker on first run)
+  load_notification_state_file
        v
   next_notification_state            (also performs Slack I/O)
        v
@@ -209,12 +207,8 @@ SLACK_WEBHOOK_RETRY_ATTEMPTS = 3
 SLACK_WEBHOOK_RETRY_DELAY_SECONDS = 1.0
 
 # --- state markers ---------------------------------------------------------
-NOTIFICATION_STATE_MARKER_RE = re.compile(r"<!--\s*notification-state:(.*?)\s*-->", re.S)
-# Legacy marker name used before the notification ledger was split out from
-# the dashboard cache. Still read on the first run after deploy so the
-# existing Slack notification history is preserved; new writes always use
-# `notification-state`.
-LEGACY_NOTIFICATION_STATE_MARKER_RE = re.compile(r"<!--\s*pr-review-dashboard-state:(.*?)\s*-->", re.S)
+# (no body markers any more; the notification ledger lives in
+# notification-state.json on the state branch)
 
 APPROVER_TEAM_SLUGS = [
     "semconv-genai-approvers",
@@ -844,47 +838,6 @@ def utc_now() -> datetime:
 
 def empty_state() -> dict[str, Any]:
     return {"version": 1, "prs": {}, "_loaded_from_dashboard": False}
-
-
-def _state_from_body(body: str, pattern: re.Pattern[str]) -> dict[str, Any]:
-    matches = pattern.findall(body or "")
-    if not matches:
-        return empty_state()
-    try:
-        state = json.loads(matches[-1])
-    except json.JSONDecodeError as e:
-        print(
-            f"warning: failed to parse {pattern.pattern!r} state marker: {e}; "
-            "falling back to empty state",
-            file=sys.stderr,
-        )
-        return empty_state()
-    if not isinstance(state, dict):
-        return empty_state()
-    if not isinstance(state.get("prs"), dict):
-        state["prs"] = {}
-    state["version"] = 1
-    state["_loaded_from_dashboard"] = True
-    return state
-
-
-def _state_marker(state: dict[str, Any], name: str) -> str:
-    stored = {k: v for k, v in state.items() if not k.startswith("_")}
-    payload = json.dumps(stored, sort_keys=True, separators=(",", ":"))
-    return f"<!-- {name}:{payload} -->"
-
-
-def notification_state_from_body(body: str) -> dict[str, Any]:
-    state = _state_from_body(body, NOTIFICATION_STATE_MARKER_RE)
-    if state.get("_loaded_from_dashboard"):
-        return state
-    # Fall back to the legacy marker name so the first run after deploy
-    # keeps the existing Slack notification ledger.
-    return _state_from_body(body, LEGACY_NOTIFICATION_STATE_MARKER_RE)
-
-
-def notification_state_marker(state: dict[str, Any]) -> str:
-    return _state_marker(state, "notification-state")
 
 
 def _load_state_file(path: Path) -> dict[str, Any]:
@@ -2068,14 +2021,9 @@ def main() -> int:
         args.model,
     )
 
-    # Read the previous notification ledger from the state file. Fall
-    # back to the legacy body markers exactly once to migrate the existing
-    # ledger across the first run after deploy; once the state file is
-    # written the body fallback path is never taken again.
+    # Read the previous notification ledger from the state file on the
+    # otelbot/pull-request-dashboard-state orphan branch.
     previous_state = load_notification_state_file()
-    if not previous_state.get("_loaded_from_dashboard"):
-        initial_body = fetch_dashboard_body(repo, DEFAULT_DASHBOARD_TITLE, DEFAULT_DASHBOARD_LABEL)[1]
-        previous_state = notification_state_from_body(initial_body)
     notification_numbers = {args.pr_number} if args.pr_number else None
     notification_state = next_notification_state(
         repo,
@@ -2085,7 +2033,7 @@ def main() -> int:
         utc_now(),
         notification_numbers,
     )
-    notification_state_changed = notification_state_marker(notification_state) != notification_state_marker(previous_state)
+    notification_state_changed = (notification_state.get("prs") or {}) != (previous_state.get("prs") or {})
 
     # Re-fetch as the CAS reference. From here on, everything is local.
     dashboard_issue_number, base_body = fetch_dashboard_body(repo, DEFAULT_DASHBOARD_TITLE, DEFAULT_DASHBOARD_LABEL)
