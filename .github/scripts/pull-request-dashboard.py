@@ -5,8 +5,11 @@ The script keeps repository facts deterministic and asks the LLM only one
 narrow question per unresolved discussion thread: who has the next action for
 that thread?
 
-By default, updates the dashboard issue. In dry-run mode, writes
-pull-request-dashboard.md for local inspection.
+By default, writes pull-request-dashboard.md and updates state files under
+--state-dir. The workflow publishes the rendered markdown to the dashboard
+issue after the state branch push succeeds. In dry-run mode, the script writes
+pull-request-dashboard.md for local inspection without saving state or posting
+Slack notifications.
 
 Usage:
     python .github/scripts/pull-request-dashboard.py
@@ -1956,7 +1959,7 @@ def main() -> int:
     ap.add_argument(
         "--dry-run",
         action="store_true",
-        help=f"Write rendered dashboard markdown to {DRY_RUN_OUTPUT} instead of updating the dashboard issue or Slack",
+        help=f"Write rendered dashboard markdown to {DRY_RUN_OUTPUT} without saving state or posting Slack",
     )
     ap.add_argument("--jobs", type=int, default=DEFAULT_JOBS, help=f"parallel workers (default: {DEFAULT_JOBS})")
     ap.add_argument("--model", default=DEFAULT_MODEL, help=f"copilot model (default: {DEFAULT_MODEL})")
