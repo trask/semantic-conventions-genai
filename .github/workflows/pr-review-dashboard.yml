@@ -200,7 +200,7 @@ jobs:
           set -euo pipefail
           git config user.email "otelbot@users.noreply.github.com"
           git config user.name  "otelbot"
-          git fetch origin "$STATE_BRANCH" || true
+          git fetch origin "$STATE_BRANCH:refs/remotes/origin/$STATE_BRANCH" || true
           if git show-ref --verify --quiet "refs/remotes/origin/$STATE_BRANCH"; then
             git worktree add state -B "$STATE_BRANCH" "origin/$STATE_BRANCH"
           else
@@ -269,6 +269,6 @@ jobs:
             fi
 
             echo "push rejected (attempt $attempt); refetching and retrying" >&2
-            git -C state fetch origin "$STATE_BRANCH"
+            git -C state fetch origin "$STATE_BRANCH:refs/remotes/origin/$STATE_BRANCH"
             git -C state reset --hard "origin/$STATE_BRANCH"
           done
