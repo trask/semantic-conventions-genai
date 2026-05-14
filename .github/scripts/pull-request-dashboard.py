@@ -1584,21 +1584,13 @@ def pending_notification_kind(
     if current_waiting_since is None:
         return None
     last_notified = parse_ts(previous_pr_state.get("last_notified_at") or "")
-    previous_waiting_since = parse_ts(previous_pr_state.get("waiting_since") or "")
-    first_seen_waiting_at = parse_ts(previous_pr_state.get("first_seen_waiting_at") or "")
     # `last_notified_at` is only set after a Slack send actually
-    # succeeds. If this waiting period was already seen during a
-    # no-state bootstrap, wait for the follow-up cadence instead of
-    # turning the suppressed first run into an initial ping one hour later.
+    # succeeds. If it is missing, either this PR has never been pinged
+    # or the previous attempt failed; in both cases fire "initial" and
+    # let the next cron tick retry on persistent failure. The webhook
+    # client already retries transient errors with exponential backoff
+    # within a single tick.
     if last_notified is None:
-        if previous_waiting_since == current_waiting_since:
-            if (
-                first_seen_waiting_at is not None
-                and now.weekday() < 5
-                and (now - first_seen_waiting_at).total_seconds() >= APPROVER_FOLLOW_UP_SECONDS
-            ):
-                return "follow-up"
-            return None
         return "initial"
     if current_waiting_since > last_notified:
         return "initial"
@@ -1699,16 +1691,8 @@ def next_notification_state(
         kind = pending_notification_kind(
             previous_state_exists, previous_pr_state, current_waiting_since, now,
         )
-        current_waiting_since_text = format_ts(current_waiting_since)
-        first_seen_waiting_at = previous_pr_state.get("first_seen_waiting_at") or ""
-        if current_waiting_since_text != (previous_pr_state.get("waiting_since") or ""):
-            first_seen_waiting_at = format_ts(now)
-        elif current_waiting_since_text and not first_seen_waiting_at:
-            first_seen_waiting_at = format_ts(now)
 
         new_pr_state: dict[str, Any] = {
-            "waiting_since": current_waiting_since_text,
-            "first_seen_waiting_at": first_seen_waiting_at,
             "last_notified_at": previous_pr_state.get("last_notified_at") or "",
             "last_notification_kind": previous_pr_state.get("last_notification_kind") or "",
         }
@@ -1730,7 +1714,7 @@ def next_notification_state(
                 new_pr_state["last_notified_at"] = format_ts(now)
                 new_pr_state["last_notification_kind"] = kind
 
-        if new_pr_state["waiting_since"] or new_pr_state["last_notified_at"]:
+        if new_pr_state["last_notified_at"]:
             new_prs[pr_key] = new_pr_state
     return {"version": 1, "prs": new_prs}
 
