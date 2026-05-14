@@ -158,10 +158,10 @@ GH_RETRY_DELAY_SECONDS = 1.5
 LLM_THREAD_TIMEOUT_SECONDS = 180
 
 # Per-PR thread classification cache. Each PR has its own cache file, and
-# entries are keyed by sha256 of the normalized thread prompt input so events
-# that do not change thread content can re-use prior classifications. The
-# workflow restores/saves this directory via actions/cache scoped to
-# TRIGGER_PR_NUMBER.
+# entries are keyed by sha256 of the model plus normalized thread prompt input
+# so events that do not change classifier inputs can re-use prior
+# classifications. The workflow restores/saves this directory via
+# actions/cache scoped to TRIGGER_PR_NUMBER.
 CLASSIFICATION_CACHE_DIR = Path(".cache/pr-classifications")
 # Directory holding state that must survive across runs:
 #   dashboard-state.json     cached per-PR routing results
@@ -1219,9 +1219,12 @@ def run_llm_for_thread(
     }
 
 
-def thread_cache_key(thread: dict[str, Any]) -> str:
+def thread_cache_key(thread: dict[str, Any], model: str) -> str:
     payload = json.dumps(
-        thread_prompt_input(thread),
+        {
+            "model": model,
+            "thread": thread_prompt_input(thread),
+        },
         sort_keys=True,
         separators=(",", ":"),
     )
@@ -1272,7 +1275,7 @@ def classify_threads(
     cache_out: dict[str, dict[str, Any]] = {}
     classifications: list[dict[str, Any]] = []
     for thread in threads:
-        key = thread_cache_key(thread)
+        key = thread_cache_key(thread, model)
         cached = cache_in.get(key)
         if cached:
             record = dict(cached)
