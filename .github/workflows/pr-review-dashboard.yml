@@ -44,6 +44,7 @@ jobs:
     #      so a failed listener doesn't show up here as a failed dashboard run.
     #   2. issue_comment fires for both issues and PRs; skip non-PR comments.
     permissions:
+      actions: read
       checks: read
       contents: read
       issues: write
