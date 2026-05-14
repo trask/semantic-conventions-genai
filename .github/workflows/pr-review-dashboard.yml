@@ -98,6 +98,13 @@ jobs:
           pr_number=""
           trigger_event=""
           trigger_action=""
+          skip_dashboard="false"
+
+          skip_forwarded_event() {
+            echo "$1" >&2
+            skip_dashboard="true"
+          }
+
           case "$EVENT_NAME" in
             pull_request_target)
               pr_number="$PR_FROM_PR_TARGET"
@@ -118,22 +125,23 @@ jobs:
                 --jq '.artifacts[] | select(.name | startswith("trigger__")) | .name' \
                 | head -n1)"
               if [[ -z "$name" ]]; then
-                echo "no trigger__ artifact found on listener run $WORKFLOW_RUN_ID" >&2
-                exit 1
-              fi
-              rest="${name#trigger__}"
-              trigger_event="${rest%__*}"
-              trigger_action="${rest##*__}"
+                skip_forwarded_event "no trigger__ artifact found on listener run $WORKFLOW_RUN_ID; skipping stale forwarded event"
+              else
+                rest="${name#trigger__}"
+                trigger_event="${rest%__*}"
+                trigger_action="${rest##*__}"
 
-              [[ "$WORKFLOW_RUN_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] \
-                || { echo "bad head sha: $WORKFLOW_RUN_HEAD_SHA"; exit 1; }
-              pr_number="$(gh api \
-                "repos/$GITHUB_REPOSITORY/commits/$WORKFLOW_RUN_HEAD_SHA/pulls" \
-                --jq '.[] | select(.state == "open" and .head.sha == env.WORKFLOW_RUN_HEAD_SHA) | .number' \
-                | head -n1)"
-              if [[ -z "$pr_number" ]]; then
-                echo "no PR found for head_sha $WORKFLOW_RUN_HEAD_SHA" >&2
-                exit 1
+                if [[ ! "$WORKFLOW_RUN_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+                  skip_forwarded_event "bad head sha: $WORKFLOW_RUN_HEAD_SHA; skipping stale forwarded event"
+                else
+                  pr_number="$(gh api \
+                    "repos/$GITHUB_REPOSITORY/commits/$WORKFLOW_RUN_HEAD_SHA/pulls" \
+                    --jq '.[] | select(.state == "open" and .head.sha == env.WORKFLOW_RUN_HEAD_SHA) | .number' \
+                    | head -n1)"
+                  if [[ -z "$pr_number" ]]; then
+                    skip_forwarded_event "no open PR found for head_sha $WORKFLOW_RUN_HEAD_SHA; skipping stale forwarded event"
+                  fi
+                fi
               fi
               ;;
           esac
@@ -148,14 +156,15 @@ jobs:
           fi
           if [[ -n "$trigger_event" ]]; then
             [[ "$trigger_event" =~ ^(pull_request_target|pull_request_review|pull_request_review_comment|issue_comment)$ ]] \
-              || { echo "bad event: $trigger_event"; exit 1; }
+              || { skip_forwarded_event "bad forwarded event: $trigger_event"; }
           fi
           if [[ -n "$trigger_action" ]]; then
             [[ "$trigger_action" =~ ^[a-z_]{1,32}$ ]] \
-              || { echo "bad action: $trigger_action"; exit 1; }
+              || { skip_forwarded_event "bad forwarded action: $trigger_action"; }
           fi
 
           {
+            echo "skip_dashboard=$skip_dashboard"
             echo "pr_number=$pr_number"
             echo "event=$trigger_event"
             echo "action=$trigger_action"
@@ -165,6 +174,7 @@ jobs:
           echo "trigger: pr=${pr_number:--} event=${trigger_event:--} action=${trigger_action:--}"
 
       - uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        if: steps.trigger.outputs.skip_dashboard != 'true'
         id: otelbot-token
         with:
           app-id: ${{ vars.OTELBOT_APP_ID }}
@@ -174,7 +184,7 @@ jobs:
         # Scoped to one PR so concurrent PR events don't overwrite each
         # other's work. Cache entries are immutable, so the save key uses
         # a rolling suffix and restore-keys picks the most recent snapshot.
-        if: steps.trigger.outputs.pr_number != ''
+        if: steps.trigger.outputs.skip_dashboard != 'true' && steps.trigger.outputs.pr_number != ''
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: .cache/pr-classifications
@@ -186,7 +196,7 @@ jobs:
         # Single cache shared across the hourly schedule and manual full
         # rebuilds, so only the few PRs that changed since the last
         # rebuild pay the LLM cost. Same rolling-key pattern as above.
-        if: steps.trigger.outputs.pr_number == ''
+        if: steps.trigger.outputs.skip_dashboard != 'true' && steps.trigger.outputs.pr_number == ''
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: .cache/pr-classifications
@@ -195,6 +205,7 @@ jobs:
             pr-classifications-all-
 
       - name: Checkout state branch
+        if: steps.trigger.outputs.skip_dashboard != 'true'
         # Cross-PR-correct state lives on an orphan branch
         # (otelbot/pull-request-dashboard-state) tracked in git. The branch has no
         # shared history with main and never triggers other workflows.
@@ -218,12 +229,14 @@ jobs:
           fi
 
       - name: Install Copilot CLI
+        if: steps.trigger.outputs.skip_dashboard != 'true'
         run: |
           npm ci --prefix .github/scripts/copilot-cli
           # expose the locally-installed `copilot` binary to subsequent steps
           echo "$GITHUB_WORKSPACE/.github/scripts/copilot-cli/node_modules/.bin" >> "$GITHUB_PATH"
 
       - name: Generate and update dashboard
+        if: steps.trigger.outputs.skip_dashboard != 'true'
         env:
           TRIGGER_PR_NUMBER: ${{ steps.trigger.outputs.pr_number }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
