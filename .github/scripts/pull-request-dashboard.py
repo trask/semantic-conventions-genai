@@ -1541,10 +1541,18 @@ def pending_notification_kind(
     if current_waiting_since is None:
         return None
     last_notified = parse_ts(previous_pr_state.get("last_notified_at") or "")
+    previous_waiting_since = parse_ts(previous_pr_state.get("waiting_since") or "")
     # No prior ping (or a prior send failed — success would have set
     # `last_notified_at`), or the PR entered a fresh waiting period since
     # the last ping: fire the initial notification to all current assignees.
-    if last_notified is None or current_waiting_since > last_notified:
+    # A `waiting_since` recorded without a `last_notified_at` means we
+    # observed this same waiting period before and intentionally did not
+    # ping (e.g. first deploy); don't re-fire "initial" for it.
+    if last_notified is None:
+        if previous_waiting_since and current_waiting_since <= previous_waiting_since:
+            return None
+        return "initial"
+    if current_waiting_since > last_notified:
         return "initial"
     if now.weekday() < 5 and (now - last_notified).total_seconds() >= APPROVER_FOLLOW_UP_SECONDS:
         return "follow-up"
@@ -1659,7 +1667,7 @@ def next_notification_state(
                 new_pr_state["last_notified_at"] = format_ts(now)
                 new_pr_state["last_notification_kind"] = kind
 
-        if new_pr_state["last_notified_at"]:
+        if new_pr_state["last_notified_at"] or new_pr_state["waiting_since"]:
             new_prs[pr_key] = new_pr_state
     return {"version": 1, "prs": new_prs}
 
