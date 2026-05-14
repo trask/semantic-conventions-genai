@@ -1492,12 +1492,11 @@ def pending_notification_kind(
     last_notified = parse_ts(previous_pr_state.get("last_notified_at") or "")
     previous_waiting_since = parse_ts(previous_pr_state.get("waiting_since") or "")
     # `last_notified_at` is only set after a Slack send actually
-    # succeeds. If it is missing but a `waiting_since` is recorded, a
-    # previous run observed this PR in the same waiting period and
-    # either had no Slack mapping for any assignee or saw every webhook
-    # call fail. In that case don't re-fire "initial" every hour; wait
-    # for a fresh waiting period (new approver/author activity) to lift
-    # the guard.
+    # succeeds. If it is missing but `waiting_since` is recorded, a
+    # previous run already tried to ping this PR in the same waiting
+    # period and every webhook call failed. Don't retry every hour; wait
+    # until `waiting_since` advances (new author/approver activity)
+    # before firing "initial" again.
     if last_notified is None:
         if previous_waiting_since and current_waiting_since <= previous_waiting_since:
             return None
@@ -1585,6 +1584,19 @@ def next_notification_state(
             continue
 
         facts = result.get("facts") or {}
+
+        # Slack mapping is optional per assignee: an assignee with no
+        # mapping is out of scope for Slack pings, not a missed
+        # notification. Filter them out before deciding whether this PR
+        # has any notification work at all.
+        mapped_assignees = [
+            (a, slack_user_map[a.lower()])
+            for a in (facts.get("assignees") or [])
+            if a.lower() in slack_user_map
+        ]
+        if not mapped_assignees:
+            continue
+
         current_waiting_since = parse_ts(facts.get("waiting_since") or "")
         kind = pending_notification_kind(
             previous_state_exists, previous_pr_state, current_waiting_since, now,
@@ -1598,11 +1610,7 @@ def next_notification_state(
 
         if kind and not dry_run:
             sent_any = False
-            for assignee in facts.get("assignees") or []:
-                slack_user_id = slack_user_map.get(assignee.lower())
-                if not slack_user_id:
-                    print(f"  warning: no Slack user mapping for @{assignee}", file=sys.stderr)
-                    continue
+            for assignee, slack_user_id in mapped_assignees:
                 error = send_slack_notification(
                     repo, result, assignee, kind, webhook_url, slack_user_id,
                 )
