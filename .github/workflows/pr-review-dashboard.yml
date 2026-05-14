@@ -29,7 +29,24 @@ on:
     types: [completed]
 
 concurrency:
-  group: ${{ github.workflow }}
+  # Per-PR groups serialize a single PR's own burst of events (push +
+  # review + comment within seconds) so they can't race on the per-PR
+  # classification cache or the state slot for that PR. Cron, manual
+  # dispatch, and workflow_run (review events forwarded by the listener)
+  # share one `shared` group. Different PRs run concurrently; the CAS
+  # retry loop on the state-branch push handles the cross-PR race.
+  #
+  # Note: this expression is evaluated before any step runs, so we can
+  # only reach raw event payloads, not derived values. workflow_run
+  # therefore lands in `shared` rather than the originating PR's group
+  # (the PR number is recovered later from the workflow_run head_sha).
+  # In practice review-event traffic is low and doesn't burst-conflict.
+  group: >-
+    ${{ github.workflow }}-${{
+      github.event.pull_request.number
+      || github.event.issue.number
+      || 'shared'
+    }}
   cancel-in-progress: false
 
 permissions:
