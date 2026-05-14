@@ -31,6 +31,9 @@ on:
 permissions:
   contents: read
 
+env:
+  DASHBOARD_STATE_BRANCH: otelbot/pull-request-dashboard-state
+
 jobs:
   resolve-trigger:
     if: >-
@@ -195,29 +198,6 @@ jobs:
           restore-keys: |
             pr-classifications-all-
 
-      - name: Checkout state branch
-        # Cross-PR-correct state lives on an orphan branch
-        # (otelbot/pull-request-dashboard-state) tracked in git. The branch has no
-        # shared history with main and never triggers other workflows.
-        # We check it out into ./state/ as a separate worktree so the
-        # main checkout of `main` is untouched. `git push --force-with-lease`
-        # later gives us a real atomic CAS via the git ref.
-        env:
-          STATE_BRANCH: otelbot/pull-request-dashboard-state
-        run: |
-          set -euo pipefail
-          git config user.email "otelbot@users.noreply.github.com"
-          git config user.name  "otelbot"
-          git fetch origin "$STATE_BRANCH:refs/remotes/origin/$STATE_BRANCH" || true
-          if git show-ref --verify --quiet "refs/remotes/origin/$STATE_BRANCH"; then
-            git worktree add state -B "$STATE_BRANCH" "origin/$STATE_BRANCH"
-          else
-            # First run: bootstrap an empty orphan branch.
-            git worktree add --detach state HEAD
-            git -C state switch --orphan "$STATE_BRANCH"
-            git -C state rm -rf . 2>/dev/null || true
-          fi
-
       - name: Install Copilot CLI
         run: |
           npm ci --prefix .github/scripts/copilot-cli
@@ -231,61 +211,52 @@ jobs:
           # needed for reading approver team membership (org:read)
           OTELBOT_TOKEN: ${{ steps.otelbot-token.outputs.token }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          SLACK_USER_MAP_JSON: ${{ secrets.SLACK_USER_MAP_JSON }}
-          STATE_BRANCH: otelbot/pull-request-dashboard-state
         run: |
           set -euo pipefail
-          prior_state="$RUNNER_TEMP/prior-notification-state.json"
-          args=(--state-dir state --prior-notification-state "$prior_state")
+          dashboard_args=(--state-branch "$DASHBOARD_STATE_BRANCH")
           if [[ -n "${TRIGGER_PR_NUMBER:-}" ]]; then
-            args+=(--pr-number "$TRIGGER_PR_NUMBER")
+            dashboard_args+=(--pr-number "$TRIGGER_PR_NUMBER")
           fi
 
-          # State branch push uses --force-with-lease as a real CAS. On
-          # rejection, refetch and rerun so the script sees the latest
-          # base. Between attempts we snapshot the just-sent
-          # notification state to $prior_state; the script union-merges
-          # it into the freshly fetched state so the cadence gate
-          # treats those pings as already-notified. A separate publish job
-          # publishes the rendered dashboard from the latest accepted state
-          # branch.
-          max_attempts=3
-          for attempt in $(seq 1 "$max_attempts"); do
-            set +e
-            python3 .github/scripts/pull-request-dashboard.py "${args[@]}"
-            status=$?
-            set -e
-            if [[ "$status" -ne 0 ]]; then
-              exit "$status"
-            fi
+          python3 .github/scripts/pull-request-dashboard/dashboard.py "${dashboard_args[@]}"
 
-            git -C state add -A
-            if git -C state diff --cached --quiet; then
-              echo "no state changes to push"
-              exit 0
-            fi
-            git -C state commit -m "Update dashboard state"
+  notify-slack:
+    needs: update-dashboard
+    if: needs.update-dashboard.result == 'success'
+    # Slack sends are external side effects, so serialize notification
+    # processing while still allowing PR-specific dashboard computation to run
+    # concurrently. The notification ledger is pushed with the same state-branch
+    # CAS retry loop used by dashboard updates.
+    concurrency:
+      group: ${{ github.workflow }}-notify-${{ github.repository }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pull-requests: read
+    environment: protected
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: main
+          persist-credentials: false
 
-            # Snapshot the just-sent state before any potential reset.
-            cp state/notification-state.json "$prior_state"
+      - uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        id: otelbot-token
+        with:
+          app-id: ${{ vars.OTELBOT_APP_ID }}
+          private-key: ${{ secrets.OTELBOT_PRIVATE_KEY }}
 
-            if git -C state \
-                -c "http.https://github.com/.extraheader=AUTHORIZATION: bearer ${OTELBOT_TOKEN}" \
-                push --force-with-lease origin "$STATE_BRANCH"; then
-              echo "state pushed on attempt $attempt"
-              exit 0
-            fi
-
-            if [[ "$attempt" -ge "$max_attempts" ]]; then
-              echo "CAS retry exhausted after $attempt attempt(s)" >&2
-              exit 1
-            fi
-
-            echo "push rejected (attempt $attempt); refetching and retrying" >&2
-            git -C state fetch origin "$STATE_BRANCH:refs/remotes/origin/$STATE_BRANCH"
-            git -C state reset --hard "origin/$STATE_BRANCH"
-          done
+      - name: Send Slack notifications
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OTELBOT_TOKEN: ${{ steps.otelbot-token.outputs.token }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_USER_MAP_JSON: ${{ secrets.SLACK_USER_MAP_JSON }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/pull-request-dashboard/notify_slack.py \
+            --state-branch "$DASHBOARD_STATE_BRANCH"
 
   publish-dashboard:
     needs: update-dashboard
@@ -307,37 +278,9 @@ jobs:
           ref: main
           persist-credentials: false
 
-      - name: Checkout state branch
-        env:
-          STATE_BRANCH: otelbot/pull-request-dashboard-state
-        run: |
-          set -euo pipefail
-          git fetch origin "$STATE_BRANCH:refs/remotes/origin/$STATE_BRANCH"
-          git worktree add state "origin/$STATE_BRANCH"
-
       - name: Publish dashboard issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DASHBOARD_TITLE: Pull Request Dashboard
-          DASHBOARD_LABEL: dashboard
-          DASHBOARD_OUTPUT: state/pull-request-dashboard.md
         run: |
-          set -euo pipefail
-          number="$(gh api \
-            --paginate \
-            "repos/$GITHUB_REPOSITORY/issues?state=open&labels=$DASHBOARD_LABEL&per_page=100" \
-            --jq '.[] | select(.pull_request == null and .title == env.DASHBOARD_TITLE) | .number' \
-            | sort -n \
-            | sed -n '1p')"
-
-          if [[ -n "$number" ]]; then
-            echo "publishing dashboard issue #$number"
-            gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body-file "$DASHBOARD_OUTPUT"
-          else
-            echo "creating dashboard issue"
-            gh issue create \
-              --repo "$GITHUB_REPOSITORY" \
-              --title "$DASHBOARD_TITLE" \
-              --label "$DASHBOARD_LABEL" \
-              --body-file "$DASHBOARD_OUTPUT"
-          fi
+          python3 .github/scripts/pull-request-dashboard/publish_dashboard.py \
+            --state-branch "$DASHBOARD_STATE_BRANCH"
