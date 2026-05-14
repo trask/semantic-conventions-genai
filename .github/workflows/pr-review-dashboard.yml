@@ -230,8 +230,32 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           SLACK_USER_MAP_JSON: ${{ secrets.SLACK_USER_MAP_JSON }}
           STATE_BRANCH: otelbot/pull-request-dashboard-state
+          DASHBOARD_TITLE: Pull Request Dashboard
+          DASHBOARD_LABEL: dashboard
+          DASHBOARD_OUTPUT: pull-request-dashboard.md
         run: |
           set -euo pipefail
+
+          publish_dashboard_issue() {
+            number="$(gh api \
+              --paginate \
+              "repos/$GITHUB_REPOSITORY/issues?state=open&labels=$DASHBOARD_LABEL&per_page=100" \
+              --jq '.[] | select(.pull_request == null and .title == env.DASHBOARD_TITLE) | .number' \
+              | sort -n \
+              | sed -n '1p')"
+
+            if [[ -n "$number" ]]; then
+              echo "publishing dashboard issue #$number"
+              gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body-file "$DASHBOARD_OUTPUT"
+            else
+              echo "creating dashboard issue"
+              gh issue create \
+                --repo "$GITHUB_REPOSITORY" \
+                --title "$DASHBOARD_TITLE" \
+                --label "$DASHBOARD_LABEL" \
+                --body-file "$DASHBOARD_OUTPUT"
+            fi
+          }
 
           prior_state="$RUNNER_TEMP/prior-notification-state.json"
           args=(--state-dir state --prior-notification-state "$prior_state")
@@ -244,25 +268,15 @@ jobs:
           # base. Between attempts we snapshot the just-sent
           # notification state to $prior_state; the script union-merges
           # it into the freshly fetched state so the cadence gate
-          # treats those pings as already-notified. If the script detects
-          # a stale dashboard issue body before publishing, it exits with
-          # 75 so this loop can retry from the latest state.
+          # treats those pings as already-notified. The dashboard issue is
+          # published only after the state push wins, making it a projection
+          # of the accepted state rather than part of the concurrency control.
           max_attempts=3
           for attempt in $(seq 1 "$max_attempts"); do
             set +e
             python3 .github/scripts/pull-request-dashboard.py "${args[@]}"
             status=$?
             set -e
-            if [[ "$status" -eq 75 ]]; then
-              if [[ "$attempt" -ge "$max_attempts" ]]; then
-                echo "dashboard issue stale-write retry exhausted after $attempt attempt(s)" >&2
-                exit 1
-              fi
-              echo "dashboard issue stale write detected (attempt $attempt); refetching and retrying" >&2
-              git -C state fetch origin "$STATE_BRANCH:refs/remotes/origin/$STATE_BRANCH"
-              git -C state reset --hard "origin/$STATE_BRANCH"
-              continue
-            fi
             if [[ "$status" -ne 0 ]]; then
               exit "$status"
             fi
@@ -270,6 +284,7 @@ jobs:
             git -C state add -A
             if git -C state diff --cached --quiet; then
               echo "no state changes to push"
+              publish_dashboard_issue
               exit 0
             fi
             git -C state commit -m "Update dashboard state"
@@ -281,6 +296,7 @@ jobs:
                 -c "http.https://github.com/.extraheader=AUTHORIZATION: bearer ${OTELBOT_TOKEN}" \
                 push --force-with-lease origin "$STATE_BRANCH"; then
               echo "state pushed on attempt $attempt"
+              publish_dashboard_issue
               exit 0
             fi
 

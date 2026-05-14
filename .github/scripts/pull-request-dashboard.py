@@ -44,18 +44,16 @@ A run flows like this:
        v
   next_notification_state            (also performs Slack I/O)
        v
-  fetch_dashboard_body                 (capture base_body for the write CAS)
-       v
   reconcile_with_latest_dashboard
        reload dashboard-state in case a concurrent run updated it
        v
-  render_dashboard_body                (local; no state markers)
+  render_dashboard_body                (write pull-request-dashboard.md)
        v
-  write_dashboard_issue                + save_dashboard_state_cache
-                                       + save_notification_state_file
-       refuses to write if the body changed under us. State files are then
-       committed and pushed by the workflow; if the push is rejected, the
-       workflow re-runs this script.
+  save_dashboard_state_cache           + save_notification_state_file
+
+The workflow commits and pushes state files first. Only after that state
+branch push succeeds does it publish pull-request-dashboard.md to the
+dashboard issue.
 
 Full (no --pr-number) runs always rebuild every PR and write unconditionally.
 Single-PR runs are optimistic-concurrency updates of just one PR slot in the
@@ -130,7 +128,6 @@ import sys
 import time
 import traceback
 import urllib.error
-import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
@@ -140,15 +137,12 @@ from typing import Any
 
 # --- dashboard issue identity ----------------------------------------------
 DRY_RUN_OUTPUT = "pull-request-dashboard.md"
-DEFAULT_DASHBOARD_TITLE = "Pull Request Dashboard"
-DEFAULT_DASHBOARD_LABEL = "dashboard"
 
 # --- CLI defaults ----------------------------------------------------------
 # Default --jobs: parallel PRs processed at once (each PR's threads are
 # classified sequentially within that worker).
 DEFAULT_JOBS = 4
 DEFAULT_MODEL = "gpt-5.4-mini"
-RETRY_EXIT_CODE = 75
 
 # --- gh subprocess retry ---------------------------------------------------
 GH_RETRY_ATTEMPTS = 4
@@ -333,57 +327,6 @@ def gh_api(path: str, paginate: bool = False, token: str | None = None) -> Any:
                 flat.append(page)
         return flat
     return data
-
-
-def find_dashboard_issue(repo: str, title: str, label: str) -> dict[str, Any] | None:
-    encoded_label = urllib.parse.quote(label, safe="")
-    issues = gh_api(f"repos/{repo}/issues?state=open&labels={encoded_label}&per_page=100", paginate=True)
-    matches = [
-        issue
-        for issue in issues
-        if issue.get("pull_request") is None and issue.get("title") == title
-    ]
-    if not matches:
-        return None
-    issue = sorted(matches, key=lambda item: item.get("number") or 0)[0]
-    return gh_api(f"repos/{repo}/issues/{issue['number']}")
-
-
-def fetch_dashboard_body(repo: str, title: str, label: str) -> tuple[int | None, str]:
-    issue = find_dashboard_issue(repo, title, label)
-    if issue is None:
-        return None, ""
-    return int(issue["number"]), issue.get("body") or ""
-
-
-def write_dashboard_issue(
-    repo: str,
-    title: str,
-    label: str,
-    body: str,
-    base_number: int | None,
-    base_body: str,
-) -> bool:
-    current_number, current_body = fetch_dashboard_body(repo, title, label)
-    if base_number is not None:
-        if current_number != base_number:
-            print("dashboard issue changed before update; skipping stale write", file=sys.stderr)
-            return False
-        if current_body != base_body:
-            print(f"dashboard issue #{base_number} was updated by another run; skipping stale write", file=sys.stderr)
-            return False
-        print(f"updating existing dashboard issue #{base_number}", file=sys.stderr)
-        run_gh(["gh", "issue", "edit", str(base_number), "--repo", repo, "--body-file", "-"], input_text=body)
-        return True
-    if current_number is not None:
-        print(f"dashboard issue #{current_number} was created by another run; skipping stale create", file=sys.stderr)
-        return False
-    print("creating new dashboard issue", file=sys.stderr)
-    run_gh(
-        ["gh", "issue", "create", "--repo", repo, "--title", title, "--label", label, "--body-file", "-"],
-        input_text=body,
-    )
-    return True
 
 
 def gh_graphql(query: str, fields: dict[str, Any], token: str | None = None) -> dict[str, Any]:
@@ -2080,64 +2023,34 @@ def main() -> int:
     )
     notification_state_changed = (notification_state.get("prs") or {}) != (previous_state.get("prs") or {})
 
-    # Re-fetch just before rendering/publishing so a concurrent dashboard
-    # edit made during the expensive PR processing phase is detected and
-    # retried. This is intentionally best-effort: another edit can still
-    # land in the small gap between write_dashboard_issue()'s final body
-    # check and `gh issue edit`, but the next run will render from state
-    # again and repair a temporarily stale issue body.
-    dashboard_issue_number, base_body = fetch_dashboard_body(
-        repo,
-        DEFAULT_DASHBOARD_TITLE,
-        DEFAULT_DASHBOARD_LABEL,
-    )
     calculation, dashboard_state_unchanged = reconcile_with_latest_dashboard(
         calculation,
         args.pr_number,
         open_pr_numbers,
     )
 
+    md = render_dashboard_body(
+        prs,
+        calculation.results,
+        repo,
+    )
+    output_path = Path(DRY_RUN_OUTPUT)
+    output_path.write_text(md, encoding="utf-8")
+    print(f"wrote dashboard markdown to {output_path.resolve()}", file=sys.stderr)
+
     if dashboard_state_unchanged and not notification_state_changed:
-        if args.dry_run:
-            output_path = Path(DRY_RUN_OUTPUT)
-            output_path.write_text(base_body, encoding="utf-8")
-            print(f"wrote dry-run dashboard to {output_path.resolve()}", file=sys.stderr)
         if args.pr_number:
             print(f"PR #{args.pr_number} dashboard state unchanged", file=sys.stderr)
         else:
             print("dashboard state unchanged", file=sys.stderr)
         return 0
 
-    md = render_dashboard_body(
-        prs,
-        calculation.results,
-        repo,
-    )
     if args.dry_run:
-        output_path = Path(DRY_RUN_OUTPUT)
-        output_path.write_text(md, encoding="utf-8")
-        print(f"wrote dry-run dashboard to {output_path.resolve()}", file=sys.stderr)
-    else:
-        published = write_dashboard_issue(
-            repo,
-            DEFAULT_DASHBOARD_TITLE,
-            DEFAULT_DASHBOARD_LABEL,
-            md,
-            dashboard_issue_number,
-            base_body,
-        )
-        if not published:
-            # A concurrent writer updated or created the issue before our
-            # best-effort publish check.
-            # Snapshot notification state for the retry, but do not save
-            # dashboard state to the orphan branch for a view we never wrote.
-            if args.prior_notification_state:
-                _save_state_file(args.prior_notification_state, notification_state)
-            return RETRY_EXIT_CODE
+        return 0
     # Persist the new state to the on-disk state files. The workflow
     # commits + pushes these to the otelbot/pull-request-dashboard-state branch with
-    # --force-with-lease after this script returns. Saved after the issue
-    # write so we don't advertise state we failed to publish.
+    # --force-with-lease after this script returns. The workflow publishes
+    # the rendered dashboard issue only after that push succeeds.
     save_dashboard_state_cache(calculation.dashboard_state)
     save_notification_state_file(notification_state)
     return 0
