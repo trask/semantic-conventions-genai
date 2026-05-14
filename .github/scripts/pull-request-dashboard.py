@@ -364,30 +364,40 @@ def gh_pr_view(repo: str, number: int) -> dict[str, Any]:
 
 
 def gh_pr_checks(repo: str, number: int) -> list[dict[str, Any]] | None:
-    # `gh pr checks` exit codes that still produce valid JSON output:
+    cmd = [
+        "gh", "pr", "checks", str(number), "--repo", repo, "--json",
+        "name,state,bucket,workflow,description,link",
+    ]
+    # `gh pr checks` exit codes that can produce valid JSON output:
     #   0  all checks passed
-    #   1  at least one check failed   (JSON still emitted)
-    #   2  at least one check pending  (JSON still emitted)
+    #   1  at least one check failed
+    #   2  at least one check pending
     #   8  no checks configured for the PR (empty stdout)
-    # Other non-zero exits go through `run_gh`'s retry logic; persistent
-    # failures surface here as None so the dashboard shows unknown CI
-    # instead of green.
-    try:
-        stdout = run_gh(
-            [
-                "gh", "pr", "checks", str(number), "--repo", repo, "--json",
-                "name,state,bucket,workflow,description,link",
-            ],
-            allowed_exit_codes={0, 1, 2, 8},
+    for attempt in range(GH_RETRY_ATTEMPTS):
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            encoding="utf-8",
+            errors="replace",
         )
-    except (RuntimeError, TransientGhError):
-        return None
-    if not stdout.strip():
-        return []
-    try:
-        return json.loads(stdout)
-    except json.JSONDecodeError:
-        return None
+        stdout = proc.stdout.strip()
+        if proc.returncode == 8 and not stdout:
+            return []
+        if proc.returncode in (0, 1, 2, 8):
+            if not stdout:
+                return None
+            try:
+                checks = json.loads(stdout)
+            except json.JSONDecodeError:
+                return None
+            return checks if isinstance(checks, list) else None
+        stderr = proc.stderr.strip()
+        if attempt == GH_RETRY_ATTEMPTS - 1 or not is_retryable_gh_error(stderr):
+            return None
+        sleep_for_retry(attempt)
+    return None
 
 
 def list_open_prs(repo: str) -> list[dict[str, Any]]:
