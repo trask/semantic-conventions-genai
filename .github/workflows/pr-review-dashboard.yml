@@ -59,13 +59,16 @@ permissions:
 jobs:
   update-dashboard:
     if: >-
+      github.repository == 'open-telemetry/semantic-conventions-genai'
+      &&
       (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
       &&
       (github.event_name != 'issue_comment' || github.event.issue.pull_request)
-    # The two parenthesized clauses above:
-    #   1. workflow_run fires for any terminal listener state; skip non-success
+    # The clauses above:
+    #   1. only run the privileged dashboard workflow on the upstream repo.
+    #   2. workflow_run fires for any terminal listener state; skip non-success
     #      so a failed listener doesn't show up here as a failed dashboard run.
-    #   2. issue_comment fires for both issues and PRs; skip non-PR comments.
+    #   3. issue_comment fires for both issues and PRs; skip non-PR comments.
     permissions:
       actions: read
       checks: read
