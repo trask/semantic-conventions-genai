@@ -29,25 +29,10 @@ on:
     types: [completed]
 
 concurrency:
-  # Per-PR groups serialize a single PR's own burst of events (push +
-  # review + comment within seconds) so they can't race on the per-PR
-  # classification cache or the state slot for that PR. Different PRs
-  # run concurrently; the CAS retry loop on the state-branch push
-  # handles the cross-PR race.
-  #
-  # The expression is evaluated before any step runs, so we can only
-  # read raw event payload fields. We key by PR number for direct PR
-  # events and by `workflow_run.head_sha` for review events forwarded
-  # by the listener (reviews on the same PR share a head SHA until the
-  # next push, so they group together). Cron and manual dispatch fall
-  # through to `shared`.
-  group: >-
-    ${{ github.workflow }}-${{
-      github.event.pull_request.number
-      || github.event.issue.number
-      || github.event.workflow_run.head_sha
-      || 'shared'
-    }}
+  # Serialize dashboard runs so the GitHub issue publish step cannot
+  # overwrite a newer projection from another PR's accepted state. The
+  # state branch push still uses --force-with-lease as the durable CAS.
+  group: ${{ github.workflow }}-${{ github.repository }}
   # Let an in-flight run complete while a burst coalesces into one
   # queued follow-up, rather than `true`'s "keep cancelling and never
   # finish" behaviour during a burst.
