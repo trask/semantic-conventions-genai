@@ -118,15 +118,24 @@ def normalize_thread_action(action: str) -> str:
     return "unclear"
 
 
-def parse_thread_decision(response_text: str) -> dict[str, str]:
+def parse_thread_decision(response_text: str) -> tuple[dict[str, str], bool]:
     obj = extract_json_object(response_text) if response_text else None
     if not obj:
-        return {"thread_action": "unclear", "reason": "LLM did not return valid JSON"}
-    action = normalize_thread_action(str(obj.get("thread_action") or obj.get("route") or ""))
+        return {"thread_action": "unclear", "reason": "LLM did not return valid JSON"}, False
+    raw_action = str(obj.get("thread_action") or obj.get("route") or "")
+    action = normalize_thread_action(raw_action)
+    valid_action = raw_action.lower().strip() in (
+        "author",
+        "reviewer",
+        "external",
+        "none",
+        "unclear",
+        "approver",
+    )
     reason = truncate(str(obj.get("reason") or ""), 300)
     if not reason:
         reason = "No reason provided"
-    return {"thread_action": action, "reason": reason}
+    return {"thread_action": action, "reason": reason}, valid_action
 
 
 def is_conflict_resolution_comment(body: str) -> bool:
@@ -186,11 +195,11 @@ def run_llm_for_thread(thread: dict[str, Any], model: str) -> dict[str, Any]:
         timeout=LLM_THREAD_TIMEOUT_SECONDS,
     )
     response_text, usage = parse_copilot_jsonl(proc.stdout)
-    decision = parse_thread_decision(response_text)
+    decision, valid_response = parse_thread_decision(response_text)
     return {
         "thread_id": thread["thread_id"],
         "thread_kind": thread["thread_kind"],
-        "failed": proc.returncode != 0,
+        "failed": proc.returncode != 0 or not valid_response,
         "decision": decision,
         "usage": usage,
         "error": proc.stderr[-2000:] if proc.stderr else "",
