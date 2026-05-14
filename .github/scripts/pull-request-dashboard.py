@@ -1490,16 +1490,13 @@ def pending_notification_kind(
     if current_waiting_since is None:
         return None
     last_notified = parse_ts(previous_pr_state.get("last_notified_at") or "")
-    previous_waiting_since = parse_ts(previous_pr_state.get("waiting_since") or "")
     # `last_notified_at` is only set after a Slack send actually
-    # succeeds. If it is missing but `waiting_since` is recorded, a
-    # previous run already tried to ping this PR in the same waiting
-    # period and every webhook call failed. Don't retry every hour; wait
-    # until `waiting_since` advances (new author/approver activity)
-    # before firing "initial" again.
+    # succeeds. If it is missing, either this PR has never been pinged
+    # or the previous attempt failed; in both cases fire "initial" and
+    # let the next cron tick retry on persistent failure. The webhook
+    # client already retries transient errors with exponential backoff
+    # within a single tick.
     if last_notified is None:
-        if previous_waiting_since and current_waiting_since <= previous_waiting_since:
-            return None
         return "initial"
     if current_waiting_since > last_notified:
         return "initial"
@@ -1542,7 +1539,6 @@ def migrated_pr_notification_state(state: dict[str, Any]) -> dict[str, Any]:
     if not timestamps:
         return state
     return {
-        "waiting_since": state.get("waiting_since") or "",
         "last_notified_at": max(timestamps),
         "last_notification_kind": "initial",
     }
@@ -1603,7 +1599,6 @@ def next_notification_state(
         )
 
         new_pr_state: dict[str, Any] = {
-            "waiting_since": facts.get("waiting_since") or "",
             "last_notified_at": previous_pr_state.get("last_notified_at") or "",
             "last_notification_kind": previous_pr_state.get("last_notification_kind") or "",
         }
@@ -1620,12 +1615,12 @@ def next_notification_state(
                     sent_any = True
             # Bump the cadence as soon as at least one assignee was pinged.
             # If every assignee failed, leave `last_notified_at` alone so the
-            # next run retries.
+            # next cron tick retries.
             if sent_any:
                 new_pr_state["last_notified_at"] = format_ts(now)
                 new_pr_state["last_notification_kind"] = kind
 
-        if new_pr_state["last_notified_at"] or new_pr_state["waiting_since"]:
+        if new_pr_state["last_notified_at"]:
             new_prs[pr_key] = new_pr_state
     return {"version": 1, "prs": new_prs}
 
