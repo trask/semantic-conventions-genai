@@ -88,12 +88,6 @@ jobs:
               # The listener encodes the trigger payload in the artifact
               # name as: trigger__<event>__<action>
               # We only need the artifact's *name*, not its contents.
-              # The PR number is derived from the workflow_run's
-              # head_sha, which GitHub populates from the actual event
-              # payload (the listener runs from the PR head SHA on fork
-              # PRs, so its YAML is fork-controlled and anything it
-              # encodes is untrusted; see
-              # pr-review-dashboard-listener.yml's top-of-file comment).
               name="$(gh api \
                 "repos/$GITHUB_REPOSITORY/actions/runs/$WORKFLOW_RUN_ID/artifacts" \
                 --jq '.artifacts[] | select(.name | startswith("trigger__")) | .name' \
