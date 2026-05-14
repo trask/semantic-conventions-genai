@@ -31,11 +31,19 @@ def find_dashboard_issue(repo: str) -> int | None:
     return numbers[0] if numbers else None
 
 
-def publish_dashboard(repo: str, dashboard_body: Path) -> None:
+def publish_dashboard(repo: str, dashboard_body: Path, state_branch_name: str, expected_revision: str) -> None:
     if not dashboard_body.exists():
         raise RuntimeError(f"dashboard markdown not found: {dashboard_body}")
 
     number = find_dashboard_issue(repo)
+    current_revision = state_branch.remote_revision(state_branch_name)
+    if current_revision != expected_revision:
+        print(
+            "state branch advanced before publication; skipping stale dashboard issue update",
+            file=sys.stderr,
+        )
+        return
+
     if number is not None:
         print(f"publishing dashboard issue #{number}", file=sys.stderr)
         run_gh([
@@ -80,7 +88,8 @@ def main() -> int:
         set_state_dir(state_dir)
         state_branch.configure_git()
         state_branch.checkout_state(state_dir, args.state_branch, require_existing=True)
-        publish_dashboard(repo, dashboard_markdown_path())
+        expected_revision = state_branch.head_revision(state_dir)
+        publish_dashboard(repo, dashboard_markdown_path(), args.state_branch, expected_revision)
     return 0
 
 
