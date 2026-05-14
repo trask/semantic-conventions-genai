@@ -48,6 +48,9 @@ concurrency:
       || github.event.workflow_run.head_sha
       || 'shared'
     }}
+  # Let an in-flight run complete while a burst coalesces into one
+  # queued follow-up, rather than `true`'s "keep cancelling and never
+  # finish" behaviour during a burst.
   cancel-in-progress: false
 
 permissions:
