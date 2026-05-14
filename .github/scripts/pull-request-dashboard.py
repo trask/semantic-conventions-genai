@@ -884,6 +884,32 @@ def save_notification_state_file(state: dict[str, Any]) -> None:
     _save_state_file(notification_state_path(), state)
 
 
+def union_merge_notification_state(
+    base: dict[str, Any], overlay: dict[str, Any]
+) -> dict[str, Any]:
+    """Union-merge `overlay`'s per-PR entries into `base`.
+
+    For each PR, the entry with the newer `last_notified_at` wins.
+    Used by the workflow's CAS retry loop: an earlier attempt's
+    just-sent notification state is carried into the next attempt so
+    the cadence gate sees those pings as already-notified after a
+    reset to the remote tip.
+    """
+    base_prs = dict(base.get("prs") or {})
+    for pr_key, overlay_entry in (overlay.get("prs") or {}).items():
+        base_entry = base_prs.get(pr_key)
+        if base_entry is None:
+            base_prs[pr_key] = overlay_entry
+            continue
+        overlay_ts = (overlay_entry or {}).get("last_notified_at") or ""
+        base_ts = base_entry.get("last_notified_at") or ""
+        if overlay_ts > base_ts:
+            base_prs[pr_key] = overlay_entry
+    merged = dict(base)
+    merged["prs"] = base_prs
+    return merged
+
+
 def stored_result(result: dict[str, Any]) -> dict[str, Any]:
     return {
         "pr_number": result.get("pr_number"),
@@ -1989,6 +2015,15 @@ def main() -> int:
     ap.add_argument("--model", default=DEFAULT_MODEL, help=f"copilot model (default: {DEFAULT_MODEL})")
     ap.add_argument("--pr-number", type=int, help="only refresh dashboard state for this PR")
     ap.add_argument(
+        "--prior-notification-state",
+        type=Path,
+        help=(
+            "path to a prior attempt's notification-state.json snapshot; "
+            "union-merged into the loaded state so the cadence gate sees "
+            "just-sent pings as already-notified after a CAS retry"
+        ),
+    )
+    ap.add_argument(
         "--state-dir",
         type=Path,
         default=DEFAULT_STATE_DIR,
@@ -2021,9 +2056,15 @@ def main() -> int:
         args.model,
     )
 
-    # Read the previous notification ledger from the state file on the
+    # Read the previous notification state from the state file on the
     # otelbot/pull-request-dashboard-state orphan branch.
     previous_state = load_notification_state_file()
+    if args.prior_notification_state and args.prior_notification_state.exists():
+        # A prior attempt of this same workflow run already sent pings
+        # and snapshotted its notification state here before the reset
+        # to the remote tip. Union-merge it so we don't re-send.
+        prior = _load_state_file(args.prior_notification_state)
+        previous_state = union_merge_notification_state(previous_state, prior)
     notification_numbers = {args.pr_number} if args.pr_number else None
     notification_state = next_notification_state(
         repo,
