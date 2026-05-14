@@ -66,6 +66,7 @@ jobs:
           PR_FROM_ISSUE: ${{ github.event.issue.number }}
           ACTION_FROM_PAYLOAD: ${{ github.event.action }}
           WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
+          WORKFLOW_RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -100,6 +101,27 @@ jobs:
               rest="${rest#*__}"
               trigger_event="${rest%__*}"
               trigger_action="${rest##*__}"
+
+              # The listener runs from the PR head SHA on fork PRs, so its
+              # YAML is fork-controlled and the artifact name is untrusted
+              # (see pr-review-dashboard-listener.yml's top-of-file
+              # comment). Cross-check the claimed PR number against the
+              # listener's workflow_run head_sha, which GitHub populates
+              # from the actual `pull_request_review` event payload and
+              # the fork cannot tamper with. A mismatch means the
+              # listener encoded a PR number that doesn't belong to the
+              # SHA it ran on, so refuse to update that PR.
+              expected_pr="$(gh api -X GET search/issues \
+                -f q="repo:$GITHUB_REPOSITORY is:pr $WORKFLOW_RUN_HEAD_SHA" \
+                --jq '.items[0].number // empty')"
+              if [[ -z "$expected_pr" ]]; then
+                echo "no PR found for head_sha $WORKFLOW_RUN_HEAD_SHA" >&2
+                exit 1
+              fi
+              if [[ "$expected_pr" != "$pr_number" ]]; then
+                echo "PR number mismatch: artifact=$pr_number head_sha=$WORKFLOW_RUN_HEAD_SHA resolves_to=$expected_pr" >&2
+                exit 1
+              fi
               ;;
           esac
 
