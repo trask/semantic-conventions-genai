@@ -156,11 +156,11 @@ GH_RETRY_DELAY_SECONDS = 1.5
 # one discussion thread.
 LLM_THREAD_TIMEOUT_SECONDS = 180
 
-# Per-PR thread classification cache. Keyed by sha256 of the thread JSON
-# only (not the full prompt), so events that change PR-level facts but not
-# thread content (e.g. pull_request_review.submitted) re-use prior
-# classifications. The workflow restores/saves this directory via
-# actions/cache scoped to TRIGGER_PR_NUMBER.
+# Per-PR thread classification cache. Each PR has its own cache file, and
+# entries are keyed by sha256 of the normalized thread prompt input so events
+# that do not change thread content can re-use prior classifications. The
+# workflow restores/saves this directory via actions/cache scoped to
+# TRIGGER_PR_NUMBER.
 CLASSIFICATION_CACHE_DIR = Path(".cache/pr-classifications")
 # Directory holding state that must survive across runs:
 #   dashboard-state.json     cached per-PR routing results
@@ -208,11 +208,16 @@ APPROVER_TEAM_SLUGS = [
     "semconv-genai-approvers",
 ]
 
-THREAD_PROMPT_TEMPLATE = """You are triaging one discussion thread from pull request #{number} in {repo}.
+THREAD_PROMPT_TEMPLATE = """You are triaging one pull request discussion thread.
 
 Classify ONLY this one thread. You are not deciding the final dashboard section.
 The final routing is computed later from deterministic facts and all thread
 classifications.
+
+Each thread comment has a deterministic participant_role:
+    - author: the PR author
+    - reviewer: any non-author human participant
+    - bot: automation
 
 Question: who has the next action for this discussion thread?
 
@@ -243,10 +248,6 @@ Guidance:
 
 Respond with a single JSON object and nothing else:
 {{"thread_action": "author" | "reviewer" | "external" | "none" | "unclear", "reason": "short explanation grounded in this thread"}}
-
----BEGIN PR FACTS---
-{facts}
----END PR FACTS---
 
 ---BEGIN THREAD---
 {thread}
@@ -1142,36 +1143,52 @@ def is_conflict_resolution_comment(body: str) -> bool:
     return "conflict" in text and any(word in text for word in ("resolve", "resolved", "merge"))
 
 
-def thread_prompt(repo: str, number: int, pr: dict[str, Any], facts: dict[str, Any], thread: dict[str, Any]) -> str:
-    pr_facts = {
-        "number": number,
-        "title": pr.get("title") or "",
-        "description": truncate(pr.get("body") or "", 800),
-        **facts,
+def participant_role(actor_role: str) -> str:
+    if actor_role == "author":
+        return "author"
+    if actor_role == "bot":
+        return "bot"
+    return "reviewer"
+
+
+def thread_prompt_input(thread: dict[str, Any]) -> dict[str, Any]:
+    prompt_thread = {
+        key: value
+        for key, value in thread.items()
+        if key not in ("thread_facts", "comments")
     }
-    facts_text = json.dumps(pr_facts, indent=2, sort_keys=True)
-    thread_text = json.dumps(thread, indent=2, sort_keys=True)
-    prompt = THREAD_PROMPT_TEMPLATE.format(repo=repo, number=number, facts=facts_text, thread=thread_text)
+    prompt_thread["comments"] = [
+        {
+            "timestamp": comment.get("timestamp") or "",
+            "actor": comment.get("actor") or "",
+            "participant_role": participant_role(comment.get("actor_role") or ""),
+            "body": comment.get("body") or "",
+        }
+        for comment in (thread.get("comments") or [])
+    ]
+    return prompt_thread
+
+
+def thread_prompt(thread: dict[str, Any]) -> str:
+    prompt_thread = thread_prompt_input(thread)
+    thread_text = json.dumps(prompt_thread, indent=2, sort_keys=True)
+    prompt = THREAD_PROMPT_TEMPLATE.format(thread=thread_text)
     if len(prompt) <= MAX_PROMPT_CHARS:
         return prompt
-    trimmed = dict(thread)
-    comments = [dict(c) for c in thread.get("comments") or []]
+    trimmed = dict(prompt_thread)
+    comments = [dict(c) for c in prompt_thread.get("comments") or []]
     for c in comments:
         c["body"] = truncate(c.get("body") or "", THREAD_COMMENT_BODY_MAX_CHARS)
     trimmed["comments"] = comments[-THREAD_RECENT_COMMENTS_LIMIT:]
     thread_text = json.dumps(trimmed, indent=2, sort_keys=True)
-    return THREAD_PROMPT_TEMPLATE.format(repo=repo, number=number, facts=facts_text, thread=thread_text)
+    return THREAD_PROMPT_TEMPLATE.format(thread=thread_text)
 
 
 def run_llm_for_thread(
-    repo: str,
-    number: int,
-    pr: dict[str, Any],
-    facts: dict[str, Any],
     thread: dict[str, Any],
     model: str,
 ) -> dict[str, Any]:
-    prompt = thread_prompt(repo, number, pr, facts, thread)
+    prompt = thread_prompt(thread)
     proc = subprocess.run(
         ["copilot", "-p", prompt, "--output-format", "json", "--model", model],
         capture_output=True,
@@ -1193,14 +1210,9 @@ def run_llm_for_thread(
     }
 
 
-def thread_cache_key(pr: dict[str, Any], facts: dict[str, Any], thread: dict[str, Any]) -> str:
+def thread_cache_key(thread: dict[str, Any]) -> str:
     payload = json.dumps(
-        {
-            "title": pr.get("title") or "",
-            "description": truncate(pr.get("body") or "", 800),
-            "facts": facts,
-            "thread": thread,
-        },
+        thread_prompt_input(thread),
         sort_keys=True,
         separators=(",", ":"),
     )
@@ -1241,10 +1253,7 @@ def prune_classification_cache(open_pr_numbers: set[int]) -> None:
 
 
 def classify_threads(
-    repo: str,
     number: int,
-    pr: dict[str, Any],
-    facts: dict[str, Any],
     threads: list[dict[str, Any]],
     model: str,
 ) -> list[dict[str, Any]]:
@@ -1254,7 +1263,7 @@ def classify_threads(
     cache_out: dict[str, dict[str, Any]] = {}
     classifications: list[dict[str, Any]] = []
     for thread in threads:
-        key = thread_cache_key(pr, facts, thread)
+        key = thread_cache_key(thread)
         cached = cache_in.get(key)
         if cached:
             record = dict(cached)
@@ -1266,7 +1275,7 @@ def classify_threads(
             cache_out[key] = cached
             continue
         try:
-            record = run_llm_for_thread(repo, number, pr, facts, thread, model)
+            record = run_llm_for_thread(thread, model)
         except subprocess.TimeoutExpired:
             record = {
                 "thread_id": thread["thread_id"],
@@ -1805,7 +1814,7 @@ def build_pr_result(
         events = normalize_events(raw, author, reviewers)
         facts = compute_facts(raw, author, events)
         threads = group_discussion_threads(raw, events, author, reviewers, facts)
-        classifications = classify_threads(repo, number, raw["pr"], facts, threads, model)
+        classifications = classify_threads(number, threads, model)
         route = route_pr(facts, classifications)
         add_wait_age_facts(facts, route, threads, classifications)
         return {
