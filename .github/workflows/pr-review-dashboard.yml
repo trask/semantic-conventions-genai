@@ -208,10 +208,15 @@ jobs:
 
           # Push state with --force-with-lease (real atomic CAS via the git
           # ref). On rejection we re-fetch the latest state and re-run the
-          # dashboard so the merge happens against the fresh tip. Slack's
-          # 24h cadence gate (driven by notification-state.json) prevents
-          # duplicate pings across retries; the issue body PATCH is itself
-          # idempotent via base_body CAS.
+          # dashboard so the merge happens against the fresh tip. The
+          # script sends Slack notifications before this push, so before
+          # resetting we snapshot notification-state.json and after the
+          # reset union-merge it on top of the freshly fetched ledger
+          # (keeping the entry with the most recent `last_notified_at`
+          # per PR). That way the next retry sees our just-sent pings as
+          # already-notified instead of resending them; the 24h cadence
+          # gate in the script then keeps subsequent retries idempotent.
+          # The issue body PATCH is itself idempotent via base_body CAS.
           max_attempts=5
           for attempt in $(seq 1 "$max_attempts"); do
             python3 .github/scripts/pull-request-dashboard.py "${args[@]}"
@@ -222,6 +227,9 @@ jobs:
               exit 0
             fi
             git -C state commit -m "Update dashboard state"
+
+            # Snapshot the just-sent ledger before any potential reset.
+            cp state/notification-state.json "$RUNNER_TEMP/sent-ledger.json" 2>/dev/null || true
 
             if git -C state \
                 -c "http.https://github.com/.extraheader=AUTHORIZATION: bearer ${OTELBOT_TOKEN}" \
@@ -238,4 +246,13 @@ jobs:
             echo "push rejected (attempt $attempt); refetching and retrying" >&2
             git -C state fetch origin "$STATE_BRANCH"
             git -C state reset --hard "origin/$STATE_BRANCH"
+
+            # Union-merge our just-sent ledger on top of the freshly
+            # fetched one so the next retry's cadence gate sees those
+            # pings as already-notified.
+            if [[ -f "$RUNNER_TEMP/sent-ledger.json" ]]; then
+              python3 .github/scripts/merge-notification-state.py \
+                "$RUNNER_TEMP/sent-ledger.json" \
+                state/notification-state.json
+            fi
           done
