@@ -755,12 +755,14 @@ def reconcile_with_latest_dashboard(
 
     if calculation.trigger_pr_result is None:
         # The trigger PR is a draft, closed, or was dropped between
-        # list_open_prs and the worker run. We cannot tell from the cache
-        # alone whether the "Draft pull requests" section needs an update
-        # (newly opened drafts have no cache entry, so the equality check
-        # below would spuriously return True), so always re-render in that
-        # case.
-        return calculation, False
+        # list_open_prs and the worker run. Drop any stale cached result so
+        # the notification job cannot continue treating the PR as routed.
+        dashboard_state = load_dashboard_state_cache()
+        if not dashboard_state.get("_loaded_from_dashboard"):
+            dashboard_state = calculation.dashboard_state
+        dashboard_state = update_dashboard_state_for_pr(dashboard_state, pr_number, None)
+        results = results_from_dashboard_state(dashboard_state, open_pr_numbers)
+        return replace(calculation, results=results, dashboard_state=dashboard_state), False
 
     # Reload the cache so we pick up any concurrent writer's update of
     # other PR slots before we merge in our own.
