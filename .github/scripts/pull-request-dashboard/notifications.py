@@ -107,19 +107,23 @@ def pending_notification_kind(
 def send_slack_notification(
     repo: str,
     result: dict[str, Any],
-    assignee: str,
+    assignees: list[str],
     kind: str,
     webhook_url: str,
-    slack_user_id: str | None,
+    assignee_mentions: str,
 ) -> str | None:
     number = result.get("pr_number")
     if not webhook_url:
         return "SLACK_WEBHOOK_URL is not set"
     try:
-        post_slack_webhook(slack_message(repo, result, f"<@{slack_user_id}>", kind), webhook_url)
+        post_slack_webhook(slack_message(repo, result, assignee_mentions, kind), webhook_url)
     except Exception as e:
-        return f"PR #{number}: failed to notify @{assignee}: {e}"
-    print(f"  mentioned @{assignee} on Slack for PR #{number} ({kind})", file=sys.stderr)
+        assignee_list = ", ".join(f"@{assignee}" for assignee in assignees)
+        return f"PR #{number}: failed to notify {assignee_list}: {e}"
+    print(
+        f"  mentioned {', '.join(f'@{assignee}' for assignee in assignees)} on Slack for PR #{number} ({kind})",
+        file=sys.stderr,
+    )
     return None
 
 
@@ -190,14 +194,12 @@ def next_notification_state(
         }
 
         if kind:
-            sent_any = False
-            for assignee, slack_user_id in mapped_assignees:
-                error = send_slack_notification(repo, result, assignee, kind, webhook_url, slack_user_id)
-                if error:
-                    print(f"  warning: {error}", file=sys.stderr)
-                else:
-                    sent_any = True
-            if sent_any:
+            assignees = [assignee for assignee, _ in mapped_assignees]
+            assignee_mentions = " ".join(f"<@{slack_user_id}>" for _, slack_user_id in mapped_assignees)
+            error = send_slack_notification(repo, result, assignees, kind, webhook_url, assignee_mentions)
+            if error:
+                print(f"  warning: {error}", file=sys.stderr)
+            else:
                 new_pr_state["last_notified_at"] = format_ts(now)
                 new_pr_state["last_notification_kind"] = kind
 
