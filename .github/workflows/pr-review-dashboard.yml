@@ -20,12 +20,17 @@ on:
       - synchronize
       - unassigned
       - unlabeled
-  pull_request_review:
-    types: [submitted, edited, dismissed]
-  pull_request_review_comment:
-    types: [created, edited, deleted]
   issue_comment:
     types: [created, edited, deleted]
+  # pull_request_review and pull_request_review_comment cannot be triggered
+  # directly here: they are loaded from the PR head SHA and would prompt
+  # the protected environment's required reviewer on every fork-PR run.
+  # Instead, the unprivileged "PR dashboard listener" workflow forwards
+  # those events as a small validated artifact and we pick it up via
+  # workflow_run, which runs from the default branch context.
+  workflow_run:
+    workflows: ["PR dashboard listener"]
+    types: [completed]
 
 concurrency:
   group: ${{ github.workflow }}
@@ -36,7 +41,14 @@ permissions:
 
 jobs:
   update-dashboard:
-    if: ${{ github.event_name != 'issue_comment' || github.event.issue.pull_request }}
+    if: >-
+      (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
+      &&
+      (github.event_name != 'issue_comment' || github.event.issue.pull_request)
+    # The two parenthesized clauses above:
+    #   1. workflow_run fires for any terminal listener state; skip non-success
+    #      so a failed listener doesn't show up here as a failed dashboard run.
+    #   2. issue_comment fires for both issues and PRs; skip non-PR comments.
     permissions:
       checks: read
       contents: read
@@ -44,12 +56,78 @@ jobs:
       pull-requests: read
     environment: protected
     runs-on: ubuntu-latest
-    env:
-      TRIGGER_PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: main
+
+      - name: Resolve trigger
+        id: trigger
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_FROM_PR_TARGET: ${{ github.event.pull_request.number }}
+          PR_FROM_ISSUE: ${{ github.event.issue.number }}
+          ACTION_FROM_PAYLOAD: ${{ github.event.action }}
+          WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          pr_number=""
+          trigger_event=""
+          trigger_action=""
+          case "$EVENT_NAME" in
+            pull_request_target)
+              pr_number="$PR_FROM_PR_TARGET"
+              trigger_event="$EVENT_NAME"
+              trigger_action="$ACTION_FROM_PAYLOAD"
+              ;;
+            issue_comment)
+              pr_number="$PR_FROM_ISSUE"
+              trigger_event="$EVENT_NAME"
+              trigger_action="$ACTION_FROM_PAYLOAD"
+              ;;
+            workflow_run)
+              # The listener encodes the trigger payload in the artifact
+              # name as: trigger__<pr>__<event>__<action>
+              # We only need the artifact's *name*, not its contents.
+              name="$(gh api \
+                "repos/$GITHUB_REPOSITORY/actions/runs/$WORKFLOW_RUN_ID/artifacts" \
+                --jq '.artifacts[] | select(.name | startswith("trigger__")) | .name' \
+                | head -n1)"
+              if [[ -z "$name" ]]; then
+                echo "no trigger__ artifact found on listener run $WORKFLOW_RUN_ID" >&2
+                exit 1
+              fi
+              rest="${name#trigger__}"
+              pr_number="${rest%%__*}"
+              rest="${rest#*__}"
+              trigger_event="${rest%__*}"
+              trigger_action="${rest##*__}"
+              ;;
+          esac
+
+          # Re-validate every value before exporting. For workflow_run this
+          # is the trust boundary between the unprivileged listener and the
+          # privileged consumer; for the other events it is defence in
+          # depth against unexpected payload shapes.
+          if [[ -n "$pr_number" ]]; then
+            [[ "$pr_number" =~ ^[1-9][0-9]{0,6}$ ]] \
+              || { echo "bad PR number: $pr_number"; exit 1; }
+          fi
+          if [[ -n "$trigger_event" ]]; then
+            [[ "$trigger_event" =~ ^(pull_request_target|pull_request_review|pull_request_review_comment|issue_comment)$ ]] \
+              || { echo "bad event: $trigger_event"; exit 1; }
+          fi
+          if [[ -n "$trigger_action" ]]; then
+            [[ "$trigger_action" =~ ^[a-z_]{1,32}$ ]] \
+              || { echo "bad action: $trigger_action"; exit 1; }
+          fi
+
+          {
+            echo "pr_number=$pr_number"
+            echo "event=$trigger_event"
+            echo "action=$trigger_action"
+          } >> "$GITHUB_OUTPUT"
 
       - uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
         id: otelbot-token
@@ -65,6 +143,9 @@ jobs:
 
       - name: Generate and update dashboard
         env:
+          TRIGGER_PR_NUMBER: ${{ steps.trigger.outputs.pr_number }}
+          TRIGGER_EVENT: ${{ steps.trigger.outputs.event }}
+          TRIGGER_ACTION: ${{ steps.trigger.outputs.action }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # needed for reading approver team membership (org:read)
           OTELBOT_TOKEN: ${{ steps.otelbot-token.outputs.token }}
@@ -74,8 +155,15 @@ jobs:
         run: |
           set -euo pipefail
 
+          args=()
           if [[ -n "${TRIGGER_PR_NUMBER:-}" ]]; then
-            python3 .github/scripts/pull-request-dashboard.py --pr-number "$TRIGGER_PR_NUMBER"
-          else
-            python3 .github/scripts/pull-request-dashboard.py
+            args+=(--pr-number "$TRIGGER_PR_NUMBER")
           fi
+          if [[ -n "${TRIGGER_EVENT:-}" ]]; then
+            args+=(--trigger-event "$TRIGGER_EVENT")
+          fi
+          if [[ -n "${TRIGGER_ACTION:-}" ]]; then
+            args+=(--trigger-action "$TRIGGER_ACTION")
+          fi
+
+          python3 .github/scripts/pull-request-dashboard.py "${args[@]}"

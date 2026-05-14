@@ -1,0 +1,58 @@
+name: PR dashboard listener
+
+# This workflow exists solely to forward review-related PR events to the
+# privileged "PR dashboard" workflow via workflow_run.
+#
+# pull_request_review and pull_request_review_comment are loaded from the
+# pull request head SHA (see
+# https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_review),
+# so for fork PRs this YAML runs from untrusted code. The fork author can
+# rewrite anything in this file, including the upload step, so nothing
+# done here can be trusted by downstream consumers.
+#
+# To minimise blast radius:
+#
+#   * top-level permissions are read-only and no secrets are referenced;
+#   * the only output is an empty artifact whose *name* encodes the
+#     trigger payload (PR number, event name, event action) using `__`
+#     as field separator.
+#
+# The privileged "PR dashboard" workflow consumes the artifact via
+# workflow_run, parses the name, and validates every value before use.
+#
+# Background: https://securitylab.github.com/research/github-actions-preventing-pwn-requests/
+
+on:
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+
+permissions:
+  contents: read
+
+jobs:
+  emit-trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build artifact name
+        id: name
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+        run: |
+          set -euo pipefail
+          # No validation here: this workflow runs from PR-head code on
+          # fork PRs, so any check could be silently removed by the PR
+          # author. The privileged consumer validates these values.
+          mkdir -p payload
+          : > payload/.keep
+          echo "value=trigger__${PR_NUMBER}__${EVENT_NAME}__${EVENT_ACTION}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ steps.name.outputs.value }}
+          path: payload/
+          retention-days: 1
+          include-hidden-files: true

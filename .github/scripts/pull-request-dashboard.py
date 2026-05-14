@@ -1893,7 +1893,15 @@ def main() -> int:
     ap.add_argument("--jobs", type=int, default=DEFAULT_JOBS, help=f"parallel workers (default: {DEFAULT_JOBS})")
     ap.add_argument("--model", default=DEFAULT_MODEL, help=f"copilot model (default: {DEFAULT_MODEL})")
     ap.add_argument("--pr-number", type=int, help="only refresh dashboard state for this PR")
+    # Trigger metadata is currently only used for logging. A follow-up will
+    # use it to skip LLM thread classification for events that cannot have
+    # changed thread content (e.g. pull_request_review.submitted, label
+    # toggles).
+    ap.add_argument("--trigger-event", help="event name that triggered this run (e.g. pull_request_review)")
+    ap.add_argument("--trigger-action", help="event activity type (e.g. submitted)")
     args = ap.parse_args()
+    if args.trigger_event or args.trigger_action:
+        print(f"trigger: event={args.trigger_event or '-'} action={args.trigger_action or '-'}", file=sys.stderr)
 
     repo = detect_repo()
     owner, repo_name = repo.split("/", 1)
