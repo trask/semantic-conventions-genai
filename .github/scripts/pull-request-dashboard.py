@@ -5,11 +5,10 @@ The script keeps repository facts deterministic and asks the LLM only one
 narrow question per unresolved discussion thread: who has the next action for
 that thread?
 
-By default, writes pull-request-dashboard.md and updates state files under
---state-dir. The workflow publishes the rendered markdown to the dashboard
-issue after the state branch push succeeds. In dry-run mode, the script writes
-pull-request-dashboard.md for local inspection without saving state or posting
-Slack notifications.
+By default, writes pull-request-dashboard.md and state files under --state-dir.
+The workflow publishes the rendered markdown from the accepted state branch. In
+dry-run mode, the script writes pull-request-dashboard.md for local inspection
+without saving state or posting Slack notifications.
 
 Usage:
     python .github/scripts/pull-request-dashboard.py
@@ -20,14 +19,15 @@ Usage:
 Architecture overview
 ---------------------
 
-State that survives across runs lives in two files under --state-dir:
+State that survives across runs lives under --state-dir:
 
   dashboard-state.json     cached per-PR routing results
   notification-state.json  per-PR Slack history
+    pull-request-dashboard.md rendered dashboard body
 
 The workflow checks out an orphan branch (otelbot/pull-request-dashboard-state) into
 --state-dir before invoking this script, and after the script returns
-commits + pushes both files with `git push --force-with-lease`. That gives
+commits + pushes these files with `git push --force-with-lease`. That gives
 us a real atomic CAS via git refs: concurrent runs that race on state
 deterministically lose the push and the workflow re-runs the script
 against the freshly fetched state.
@@ -55,8 +55,9 @@ A run flows like this:
   save_dashboard_state_cache           + save_notification_state_file
 
 The workflow commits and pushes state files first. Only after that state
-branch push succeeds does it publish pull-request-dashboard.md to the
-dashboard issue.
+branch push succeeds does a follow-up publishing job fetch the accepted
+rendered dashboard body from the state branch and publish it to the dashboard
+issue.
 
 Full (no --pr-number) runs always rebuild every PR and write unconditionally.
 Single-PR runs are optimistic-concurrency updates of just one PR slot in the
@@ -184,6 +185,14 @@ def dashboard_state_path() -> Path:
 
 def notification_state_path() -> Path:
     return _state_dir / "notification-state.json"
+
+
+def dashboard_markdown_path(dry_run: bool) -> Path:
+    if dry_run:
+        return Path(DRY_RUN_OUTPUT)
+    return _state_dir / DRY_RUN_OUTPUT
+
+
 # Per-thread, keep at most this many of the most recent comments when
 # building the LLM prompt (older comments are dropped, not truncated).
 THREAD_RECENT_COMMENTS_LIMIT = 20
@@ -2067,7 +2076,8 @@ def main() -> int:
         calculation.results,
         repo,
     )
-    output_path = Path(DRY_RUN_OUTPUT)
+    output_path = dashboard_markdown_path(args.dry_run)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(md, encoding="utf-8")
     print(f"wrote dashboard markdown to {output_path.resolve()}", file=sys.stderr)
 
@@ -2082,8 +2092,8 @@ def main() -> int:
         return 0
     # Persist the new state to the on-disk state files. The workflow
     # commits + pushes these to the otelbot/pull-request-dashboard-state branch with
-    # --force-with-lease after this script returns. The workflow publishes
-    # the rendered dashboard issue only after that push succeeds.
+    # --force-with-lease after this script returns. A follow-up publish job
+    # publishes the rendered dashboard from the accepted state branch.
     save_dashboard_state_cache(calculation.dashboard_state)
     save_notification_state_file(notification_state)
     return 0

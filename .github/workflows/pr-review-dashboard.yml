@@ -28,21 +28,11 @@ on:
     workflows: ["PR dashboard listener"]
     types: [completed]
 
-concurrency:
-  # Serialize dashboard runs so the GitHub issue publish step cannot
-  # overwrite a newer projection from another PR's accepted state. The
-  # state branch push still uses --force-with-lease as the durable CAS.
-  group: ${{ github.workflow }}-${{ github.repository }}
-  # Let an in-flight run complete while a burst coalesces into one
-  # queued follow-up, rather than `true`'s "keep cancelling and never
-  # finish" behaviour during a burst.
-  cancel-in-progress: false
-
 permissions:
   contents: read
 
 jobs:
-  update-dashboard:
+  resolve-trigger:
     if: >-
       github.repository == 'open-telemetry/semantic-conventions-genai'
       &&
@@ -56,18 +46,13 @@ jobs:
     #   3. issue_comment fires for both issues and PRs; skip non-PR comments.
     permissions:
       actions: read
-      checks: read
       contents: read
-      issues: write
       pull-requests: read
-    environment: protected
     runs-on: ubuntu-latest
+    outputs:
+      skip_dashboard: ${{ steps.trigger.outputs.skip_dashboard }}
+      pr_number: ${{ steps.trigger.outputs.pr_number }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: main
-          persist-credentials: false
-
       - name: Resolve trigger
         id: trigger
         env:
@@ -158,8 +143,29 @@ jobs:
           # Echo the resolved trigger to the job log for at-a-glance diagnostics.
           echo "trigger: pr=${pr_number:--} event=${trigger_event:--} action=${trigger_action:--}"
 
+  update-dashboard:
+    needs: resolve-trigger
+    if: needs.resolve-trigger.outputs.skip_dashboard != 'true'
+    # Same-PR events are serialized together while unrelated PRs can update
+    # state concurrently. Full rebuilds use their own lane. The state branch
+    # push below still uses --force-with-lease as the durable CAS across lanes.
+    concurrency:
+      group: ${{ github.workflow }}-state-${{ github.repository }}-${{ needs.resolve-trigger.outputs.pr_number || 'full' }}
+      cancel-in-progress: false
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      pull-requests: read
+    environment: protected
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: main
+          persist-credentials: false
+
       - uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
-        if: steps.trigger.outputs.skip_dashboard != 'true'
         id: otelbot-token
         with:
           app-id: ${{ vars.OTELBOT_APP_ID }}
@@ -169,19 +175,19 @@ jobs:
         # Scoped to one PR so concurrent PR events don't overwrite each
         # other's work. Cache entries are immutable, so the save key uses
         # a rolling suffix and restore-keys picks the most recent snapshot.
-        if: steps.trigger.outputs.skip_dashboard != 'true' && steps.trigger.outputs.pr_number != ''
+        if: needs.resolve-trigger.outputs.pr_number != ''
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: .cache/pr-classifications
-          key: pr-classifications-${{ steps.trigger.outputs.pr_number }}-${{ github.run_id }}
+          key: pr-classifications-${{ needs.resolve-trigger.outputs.pr_number }}-${{ github.run_id }}
           restore-keys: |
-            pr-classifications-${{ steps.trigger.outputs.pr_number }}-
+            pr-classifications-${{ needs.resolve-trigger.outputs.pr_number }}-
 
       - name: Restore shared full-rebuild classification cache
         # Single cache shared across the hourly schedule and manual full
         # rebuilds, so only the few PRs that changed since the last
         # rebuild pay the LLM cost. Same rolling-key pattern as above.
-        if: steps.trigger.outputs.skip_dashboard != 'true' && steps.trigger.outputs.pr_number == ''
+        if: needs.resolve-trigger.outputs.pr_number == ''
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: .cache/pr-classifications
@@ -190,7 +196,6 @@ jobs:
             pr-classifications-all-
 
       - name: Checkout state branch
-        if: steps.trigger.outputs.skip_dashboard != 'true'
         # Cross-PR-correct state lives on an orphan branch
         # (otelbot/pull-request-dashboard-state) tracked in git. The branch has no
         # shared history with main and never triggers other workflows.
@@ -214,16 +219,14 @@ jobs:
           fi
 
       - name: Install Copilot CLI
-        if: steps.trigger.outputs.skip_dashboard != 'true'
         run: |
           npm ci --prefix .github/scripts/copilot-cli
           # expose the locally-installed `copilot` binary to subsequent steps
           echo "$GITHUB_WORKSPACE/.github/scripts/copilot-cli/node_modules/.bin" >> "$GITHUB_PATH"
 
       - name: Generate and update dashboard
-        if: steps.trigger.outputs.skip_dashboard != 'true'
         env:
-          TRIGGER_PR_NUMBER: ${{ steps.trigger.outputs.pr_number }}
+          TRIGGER_PR_NUMBER: ${{ needs.resolve-trigger.outputs.pr_number }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # needed for reading approver team membership (org:read)
           OTELBOT_TOKEN: ${{ steps.otelbot-token.outputs.token }}
@@ -231,45 +234,11 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           SLACK_USER_MAP_JSON: ${{ secrets.SLACK_USER_MAP_JSON }}
           STATE_BRANCH: otelbot/pull-request-dashboard-state
-          DASHBOARD_TITLE: Pull Request Dashboard
-          DASHBOARD_LABEL: dashboard
-          DASHBOARD_OUTPUT: pull-request-dashboard.md
         run: |
           set -euo pipefail
-
-          publish_dashboard_issue() {
-            number="$(gh api \
-              --paginate \
-              "repos/$GITHUB_REPOSITORY/issues?state=open&labels=$DASHBOARD_LABEL&per_page=100" \
-              --jq '.[] | select(.pull_request == null and .title == env.DASHBOARD_TITLE) | .number' \
-              | sort -n \
-              | sed -n '1p')"
-
-            if [[ -n "$number" ]]; then
-              echo "publishing dashboard issue #$number"
-              gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body-file "$DASHBOARD_OUTPUT"
-            else
-              echo "creating dashboard issue"
-              gh issue create \
-                --repo "$GITHUB_REPOSITORY" \
-                --title "$DASHBOARD_TITLE" \
-                --label "$DASHBOARD_LABEL" \
-                --body-file "$DASHBOARD_OUTPUT"
-            fi
-          }
-
           prior_state="$RUNNER_TEMP/prior-notification-state.json"
           args=(--state-dir state --prior-notification-state "$prior_state")
-          run_created_at="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .created_at)"
-          run_started_at="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .run_started_at)"
-          run_created_epoch="$(date -d "$run_created_at" +%s)"
-          run_started_epoch="$(date -d "$run_started_at" +%s)"
-          queued_seconds=$((run_started_epoch - run_created_epoch))
-          # GitHub keeps at most one pending run per concurrency group. If
-          # this run waited behind another dashboard run, it may have
-          # coalesced several PR events, so rebuild all PRs instead of only
-          # the triggering PR.
-          if [[ -n "${TRIGGER_PR_NUMBER:-}" && "$queued_seconds" -lt 60 ]]; then
+          if [[ -n "${TRIGGER_PR_NUMBER:-}" ]]; then
             args+=(--pr-number "$TRIGGER_PR_NUMBER")
           fi
 
@@ -278,9 +247,9 @@ jobs:
           # base. Between attempts we snapshot the just-sent
           # notification state to $prior_state; the script union-merges
           # it into the freshly fetched state so the cadence gate
-          # treats those pings as already-notified. The dashboard issue is
-          # published only after the state push wins, making it a projection
-          # of the accepted state rather than part of the concurrency control.
+          # treats those pings as already-notified. A separate publish job
+          # publishes the rendered dashboard from the latest accepted state
+          # branch.
           max_attempts=3
           for attempt in $(seq 1 "$max_attempts"); do
             set +e
@@ -294,7 +263,6 @@ jobs:
             git -C state add -A
             if git -C state diff --cached --quiet; then
               echo "no state changes to push"
-              publish_dashboard_issue
               exit 0
             fi
             git -C state commit -m "Update dashboard state"
@@ -306,7 +274,6 @@ jobs:
                 -c "http.https://github.com/.extraheader=AUTHORIZATION: bearer ${OTELBOT_TOKEN}" \
                 push --force-with-lease origin "$STATE_BRANCH"; then
               echo "state pushed on attempt $attempt"
-              publish_dashboard_issue
               exit 0
             fi
 
@@ -319,3 +286,58 @@ jobs:
             git -C state fetch origin "$STATE_BRANCH:refs/remotes/origin/$STATE_BRANCH"
             git -C state reset --hard "origin/$STATE_BRANCH"
           done
+
+  publish-dashboard:
+    needs: update-dashboard
+    if: needs.update-dashboard.result == 'success'
+    # The issue body is a single shared projection. Serialize publication,
+    # then fetch the latest accepted state branch while holding this slot so
+    # an older run cannot publish stale markdown after a newer state update
+    # has landed.
+    concurrency:
+      group: ${{ github.workflow }}-publish-${{ github.repository }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Checkout state branch
+        env:
+          STATE_BRANCH: otelbot/pull-request-dashboard-state
+        run: |
+          set -euo pipefail
+          git fetch origin "$STATE_BRANCH:refs/remotes/origin/$STATE_BRANCH"
+          git worktree add state "origin/$STATE_BRANCH"
+
+      - name: Publish dashboard issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DASHBOARD_TITLE: Pull Request Dashboard
+          DASHBOARD_LABEL: dashboard
+          DASHBOARD_OUTPUT: state/pull-request-dashboard.md
+        run: |
+          set -euo pipefail
+          number="$(gh api \
+            --paginate \
+            "repos/$GITHUB_REPOSITORY/issues?state=open&labels=$DASHBOARD_LABEL&per_page=100" \
+            --jq '.[] | select(.pull_request == null and .title == env.DASHBOARD_TITLE) | .number' \
+            | sort -n \
+            | sed -n '1p')"
+
+          if [[ -n "$number" ]]; then
+            echo "publishing dashboard issue #$number"
+            gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body-file "$DASHBOARD_OUTPUT"
+          else
+            echo "creating dashboard issue"
+            gh issue create \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$DASHBOARD_TITLE" \
+              --label "$DASHBOARD_LABEL" \
+              --body-file "$DASHBOARD_OUTPUT"
+          fi
