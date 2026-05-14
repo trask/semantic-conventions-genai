@@ -427,17 +427,21 @@ def gh_pr_view(repo: str, number: int) -> dict[str, Any]:
 
 
 def gh_pr_checks(repo: str, number: int) -> list[dict[str, Any]] | None:
-    # `gh pr checks` exits 8 when there are no checks configured for the PR
-    # (normal, represented as []) and 0 with JSON output otherwise. Other
-    # non-zero exits go through `run_gh`'s retry logic; persistent failures
-    # surface here as None so the dashboard shows unknown CI instead of green.
+    # `gh pr checks` exit codes that still produce valid JSON output:
+    #   0  all checks passed
+    #   1  at least one check failed   (JSON still emitted)
+    #   2  at least one check pending  (JSON still emitted)
+    #   8  no checks configured for the PR (empty stdout)
+    # Other non-zero exits go through `run_gh`'s retry logic; persistent
+    # failures surface here as None so the dashboard shows unknown CI
+    # instead of green.
     try:
         stdout = run_gh(
             [
                 "gh", "pr", "checks", str(number), "--repo", repo, "--json",
                 "name,state,bucket,workflow,description,link",
             ],
-            allowed_exit_codes={0, 8},
+            allowed_exit_codes={0, 1, 2, 8},
         )
     except (RuntimeError, TransientGhError):
         return None
