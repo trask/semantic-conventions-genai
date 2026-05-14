@@ -2005,7 +2005,8 @@ def main() -> int:
 
     # Read the previous notification state from the state file on the
     # otelbot/pull-request-dashboard-state orphan branch.
-    previous_state = load_notification_state_file()
+    state_file_notification_state = load_notification_state_file()
+    previous_state = state_file_notification_state
     if args.prior_notification_state and args.prior_notification_state.exists():
         # A prior attempt of this same workflow run already sent pings
         # and snapshotted its notification state here before the reset
@@ -2021,7 +2022,9 @@ def main() -> int:
         utc_now(),
         notification_numbers,
     )
-    notification_state_changed = (notification_state.get("prs") or {}) != (previous_state.get("prs") or {})
+    notification_state_changed = (notification_state.get("prs") or {}) != (
+        state_file_notification_state.get("prs") or {}
+    )
 
     calculation, dashboard_state_unchanged = reconcile_with_latest_dashboard(
         calculation,
