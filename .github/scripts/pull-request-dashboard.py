@@ -31,7 +31,7 @@ against the freshly fetched state.
 
 The dashboard issue body is rendered fresh each run; no state markers are
 embedded in it. On the first run after deploy `load_notification_state_file`
-falls back once to the legacy `<!-- notification-state: ... -->` body
+falls back once to the legacy `<!-- pr-review-dashboard-state: ... -->` body
 marker so the existing Slack ledger is migrated to the file.
 
 A run flows like this:
