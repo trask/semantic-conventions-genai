@@ -254,7 +254,7 @@ jobs:
             git -C state commit -m "Update dashboard state"
 
             # Snapshot the just-sent state before any potential reset.
-            cp state/notification-state.json "$prior_state" 2>/dev/null || true
+            cp state/notification-state.json "$prior_state"
 
             if git -C state \
                 -c "http.https://github.com/.extraheader=AUTHORIZATION: bearer ${OTELBOT_TOKEN}" \
