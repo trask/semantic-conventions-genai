@@ -206,10 +206,6 @@ APPROVER_FOLLOW_UP_SECONDS = 24 * 60 * 60
 SLACK_WEBHOOK_RETRY_ATTEMPTS = 3
 SLACK_WEBHOOK_RETRY_DELAY_SECONDS = 1.0
 
-# --- state markers ---------------------------------------------------------
-# (no body markers any more; the notification ledger lives in
-# notification-state.json on the state branch)
-
 APPROVER_TEAM_SLUGS = [
     "semconv-genai-approvers",
 ]
@@ -1495,12 +1491,13 @@ def pending_notification_kind(
         return None
     last_notified = parse_ts(previous_pr_state.get("last_notified_at") or "")
     previous_waiting_since = parse_ts(previous_pr_state.get("waiting_since") or "")
-    # No prior ping (or a prior send failed — success would have set
-    # `last_notified_at`), or the PR entered a fresh waiting period since
-    # the last ping: fire the initial notification to all current assignees.
-    # A `waiting_since` recorded without a `last_notified_at` means we
-    # observed this same waiting period before and intentionally did not
-    # ping (e.g. first deploy); don't re-fire "initial" for it.
+    # `last_notified_at` is only set after a Slack send actually
+    # succeeds. If it is missing but a `waiting_since` is recorded, a
+    # previous run observed this PR in the same waiting period and
+    # either had no Slack mapping for any assignee or saw every webhook
+    # call fail. In that case don't re-fire "initial" every hour; wait
+    # for a fresh waiting period (new approver/author activity) to lift
+    # the guard.
     if last_notified is None:
         if previous_waiting_since and current_waiting_since <= previous_waiting_since:
             return None
