@@ -1580,6 +1580,9 @@ def pending_notification_kind(
     now: datetime,
 ) -> str | None:
     if not previous_state_exists:
+        # Bootstrap or missing/corrupt state: observe once without Slack so
+        # first deployment doesn't blast old waits. If a PR is still waiting
+        # on the next stateful run, it may receive an initial ping then.
         return None
     if current_waiting_since is None:
         return None
