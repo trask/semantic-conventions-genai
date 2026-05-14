@@ -14,8 +14,10 @@ name: PR dashboard listener
 #
 #   * top-level permissions are read-only and no secrets are referenced;
 #   * the only output is an empty artifact whose *name* encodes the
-#     trigger payload (PR number, event name, event action) using `__`
-#     as field separator.
+#     trigger payload (event name, event action) using `__` as field
+#     separator. The PR number is derived by the consumer from the
+#     workflow_run's head_sha, which GitHub populates from the actual
+#     event payload and the fork cannot tamper with.
 #
 # The privileged "PR dashboard" workflow consumes the artifact via
 # workflow_run, parses the name, and validates every value before use.
@@ -38,7 +40,6 @@ jobs:
       - name: Build artifact name
         id: name
         env:
-          PR_NUMBER: ${{ github.event.pull_request.number }}
           EVENT_NAME: ${{ github.event_name }}
           EVENT_ACTION: ${{ github.event.action }}
         run: |
@@ -48,7 +49,7 @@ jobs:
           # author. The privileged consumer validates these values.
           mkdir -p payload
           : > payload/.keep
-          echo "value=trigger__${PR_NUMBER}__${EVENT_NAME}__${EVENT_ACTION}" >> "$GITHUB_OUTPUT"
+          echo "value=trigger__${EVENT_NAME}__${EVENT_ACTION}" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

@@ -86,8 +86,14 @@ jobs:
               ;;
             workflow_run)
               # The listener encodes the trigger payload in the artifact
-              # name as: trigger__<pr>__<event>__<action>
+              # name as: trigger__<event>__<action>
               # We only need the artifact's *name*, not its contents.
+              # The PR number is derived from the workflow_run's
+              # head_sha, which GitHub populates from the actual event
+              # payload (the listener runs from the PR head SHA on fork
+              # PRs, so its YAML is fork-controlled and anything it
+              # encodes is untrusted; see
+              # pr-review-dashboard-listener.yml's top-of-file comment).
               name="$(gh api \
                 "repos/$GITHUB_REPOSITORY/actions/runs/$WORKFLOW_RUN_ID/artifacts" \
                 --jq '.artifacts[] | select(.name | startswith("trigger__")) | .name' \
@@ -97,29 +103,14 @@ jobs:
                 exit 1
               fi
               rest="${name#trigger__}"
-              pr_number="${rest%%__*}"
-              rest="${rest#*__}"
               trigger_event="${rest%__*}"
               trigger_action="${rest##*__}"
 
-              # The listener runs from the PR head SHA on fork PRs, so its
-              # YAML is fork-controlled and the artifact name is untrusted
-              # (see pr-review-dashboard-listener.yml's top-of-file
-              # comment). Cross-check the claimed PR number against the
-              # listener's workflow_run head_sha, which GitHub populates
-              # from the actual `pull_request_review` event payload and
-              # the fork cannot tamper with. A mismatch means the
-              # listener encoded a PR number that doesn't belong to the
-              # SHA it ran on, so refuse to update that PR.
-              expected_pr="$(gh api -X GET search/issues \
+              pr_number="$(gh api -X GET search/issues \
                 -f q="repo:$GITHUB_REPOSITORY is:pr $WORKFLOW_RUN_HEAD_SHA" \
                 --jq '.items[0].number // empty')"
-              if [[ -z "$expected_pr" ]]; then
+              if [[ -z "$pr_number" ]]; then
                 echo "no PR found for head_sha $WORKFLOW_RUN_HEAD_SHA" >&2
-                exit 1
-              fi
-              if [[ "$expected_pr" != "$pr_number" ]]; then
-                echo "PR number mismatch: artifact=$pr_number head_sha=$WORKFLOW_RUN_HEAD_SHA resolves_to=$expected_pr" >&2
                 exit 1
               fi
               ;;
