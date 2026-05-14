@@ -244,8 +244,9 @@ jobs:
           # base. Between attempts we snapshot the just-sent
           # notification state to $prior_state; the script union-merges
           # it into the freshly fetched state so the cadence gate
-          # treats those pings as already-notified. The issue body
-          # PATCH is itself idempotent via base_body CAS.
+          # treats those pings as already-notified. If the script detects
+          # a stale dashboard issue body before publishing, it exits with
+          # 75 so this loop can retry from the latest state.
           max_attempts=3
           for attempt in $(seq 1 "$max_attempts"); do
             set +e
@@ -254,10 +255,10 @@ jobs:
             set -e
             if [[ "$status" -eq 75 ]]; then
               if [[ "$attempt" -ge "$max_attempts" ]]; then
-                echo "dashboard issue CAS retry exhausted after $attempt attempt(s)" >&2
+                echo "dashboard issue stale-write retry exhausted after $attempt attempt(s)" >&2
                 exit 1
               fi
-              echo "dashboard issue CAS lost (attempt $attempt); refetching and retrying" >&2
+              echo "dashboard issue stale write detected (attempt $attempt); refetching and retrying" >&2
               git -C state fetch origin "$STATE_BRANCH:refs/remotes/origin/$STATE_BRANCH"
               git -C state reset --hard "origin/$STATE_BRANCH"
               continue
