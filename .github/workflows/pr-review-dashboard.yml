@@ -260,7 +260,16 @@ jobs:
 
           prior_state="$RUNNER_TEMP/prior-notification-state.json"
           args=(--state-dir state --prior-notification-state "$prior_state")
-          if [[ -n "${TRIGGER_PR_NUMBER:-}" ]]; then
+          run_created_at="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .created_at)"
+          run_started_at="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .run_started_at)"
+          run_created_epoch="$(date -d "$run_created_at" +%s)"
+          run_started_epoch="$(date -d "$run_started_at" +%s)"
+          queued_seconds=$((run_started_epoch - run_created_epoch))
+          # GitHub keeps at most one pending run per concurrency group. If
+          # this run waited behind another dashboard run, it may have
+          # coalesced several PR events, so rebuild all PRs instead of only
+          # the triggering PR.
+          if [[ -n "${TRIGGER_PR_NUMBER:-}" && "$queued_seconds" -lt 60 ]]; then
             args+=(--pr-number "$TRIGGER_PR_NUMBER")
           fi
 
