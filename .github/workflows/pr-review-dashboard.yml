@@ -261,9 +261,10 @@ jobs:
   publish-dashboard:
     needs: update-dashboard
     if: needs.update-dashboard.result == 'success'
-    # The issue body is a single shared projection. Serialize publication and
-    # have the publisher verify the state ref has not advanced before editing
-    # so an older run cannot publish stale markdown after a newer state update.
+    # The issue body is a single shared projection. Serialize publication,
+    # then fetch the latest accepted state branch while holding this slot so
+    # an older run cannot publish stale markdown after a newer state update
+    # has landed.
     concurrency:
       group: ${{ github.workflow }}-publish-${{ github.repository }}
       cancel-in-progress: false

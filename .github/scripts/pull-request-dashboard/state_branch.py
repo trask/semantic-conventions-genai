@@ -28,10 +28,6 @@ def run(cmd: list[str], check: bool = True, cwd: Path | None = None) -> subproce
     return subprocess.run(cmd, check=check, cwd=cwd, text=True)
 
 
-def output(cmd: list[str], cwd: Path | None = None) -> str:
-    return subprocess.run(cmd, check=True, cwd=cwd, text=True, capture_output=True).stdout.strip()
-
-
 def remote_ref(state_branch: str) -> str:
     return f"refs/remotes/origin/{state_branch}"
 
@@ -44,15 +40,6 @@ def fetch_state_branch(state_branch: str, required: bool) -> bool:
     if required:
         raise RuntimeError(f"failed to fetch required state branch {state_branch}")
     return False
-
-
-def remote_revision(state_branch: str) -> str:
-    fetch_state_branch(state_branch, required=True)
-    return output(["git", "rev-parse", remote_ref(state_branch)])
-
-
-def head_revision(state_dir: Path) -> str:
-    return output(["git", "rev-parse", "HEAD"], cwd=state_dir)
 
 
 def has_state_branch(state_branch: str) -> bool:
