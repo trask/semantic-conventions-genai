@@ -248,7 +248,23 @@ jobs:
           # PATCH is itself idempotent via base_body CAS.
           max_attempts=3
           for attempt in $(seq 1 "$max_attempts"); do
+            set +e
             python3 .github/scripts/pull-request-dashboard.py "${args[@]}"
+            status=$?
+            set -e
+            if [[ "$status" -eq 75 ]]; then
+              if [[ "$attempt" -ge "$max_attempts" ]]; then
+                echo "dashboard issue CAS retry exhausted after $attempt attempt(s)" >&2
+                exit 1
+              fi
+              echo "dashboard issue CAS lost (attempt $attempt); refetching and retrying" >&2
+              git -C state fetch origin "$STATE_BRANCH:refs/remotes/origin/$STATE_BRANCH"
+              git -C state reset --hard "origin/$STATE_BRANCH"
+              continue
+            fi
+            if [[ "$status" -ne 0 ]]; then
+              exit "$status"
+            fi
 
             git -C state add -A
             if git -C state diff --cached --quiet; then

@@ -148,6 +148,7 @@ DEFAULT_DASHBOARD_LABEL = "dashboard"
 # classified sequentially within that worker).
 DEFAULT_JOBS = 4
 DEFAULT_MODEL = "gpt-5.4-mini"
+RETRY_EXIT_CODE = 75
 
 # --- gh subprocess retry ---------------------------------------------------
 GH_RETRY_ATTEMPTS = 4
@@ -2203,10 +2204,11 @@ def main() -> int:
         )
         if not published:
             # The issue body write lost the CAS to a concurrent writer.
-            # Skip saving our state to the orphan branch so we don't
-            # advertise a published view we never actually wrote; the
-            # workflow's retry loop will rebuild against the fresh body.
-            return 0
+            # Snapshot notification state for the retry, but do not save
+            # dashboard state to the orphan branch for a view we never wrote.
+            if args.prior_notification_state:
+                _save_state_file(args.prior_notification_state, notification_state)
+            return RETRY_EXIT_CODE
     # Persist the new state to the on-disk state files. The workflow
     # commits + pushes these to the otelbot/pull-request-dashboard-state branch with
     # --force-with-lease after this script returns. Saved after the issue
