@@ -122,9 +122,12 @@ jobs:
               trigger_event="${rest%__*}"
               trigger_action="${rest##*__}"
 
-              pr_number="$(gh api -X GET search/issues \
-                -f q="repo:$GITHUB_REPOSITORY is:pr $WORKFLOW_RUN_HEAD_SHA" \
-                --jq '.items[0].number // empty')"
+              [[ "$WORKFLOW_RUN_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] \
+                || { echo "bad head sha: $WORKFLOW_RUN_HEAD_SHA"; exit 1; }
+              pr_number="$(gh api \
+                "repos/$GITHUB_REPOSITORY/commits/$WORKFLOW_RUN_HEAD_SHA/pulls" \
+                --jq '.[] | select(.state == "open" and .head.sha == env.WORKFLOW_RUN_HEAD_SHA) | .number' \
+                | head -n1)"
               if [[ -z "$pr_number" ]]; then
                 echo "no PR found for head_sha $WORKFLOW_RUN_HEAD_SHA" >&2
                 exit 1
