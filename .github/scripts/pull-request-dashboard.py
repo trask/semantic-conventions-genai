@@ -1193,8 +1193,17 @@ def run_llm_for_thread(
     }
 
 
-def thread_cache_key(thread: dict[str, Any]) -> str:
-    payload = json.dumps(thread, sort_keys=True, separators=(",", ":"))
+def thread_cache_key(pr: dict[str, Any], facts: dict[str, Any], thread: dict[str, Any]) -> str:
+    payload = json.dumps(
+        {
+            "title": pr.get("title") or "",
+            "description": truncate(pr.get("body") or "", 800),
+            "facts": facts,
+            "thread": thread,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -1245,7 +1254,7 @@ def classify_threads(
     cache_out: dict[str, dict[str, Any]] = {}
     classifications: list[dict[str, Any]] = []
     for thread in threads:
-        key = thread_cache_key(thread)
+        key = thread_cache_key(pr, facts, thread)
         cached = cache_in.get(key)
         if cached:
             record = dict(cached)
