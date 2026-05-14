@@ -17,11 +17,22 @@ Usage:
 Architecture overview
 ---------------------
 
-The dashboard issue body carries two HTML-comment state blobs that survive
-across runs:
+State that survives across runs lives in two files under --state-dir:
 
-  <!-- dashboard-state: {prs: ...} -->        cached per-PR results
-  <!-- notification-state: {prs: ...} -->     per-PR Slack history
+  dashboard-state.json     cached per-PR routing results
+  notification-state.json  per-PR Slack history
+
+The workflow checks out an orphan branch (otelbot/pull-request-dashboard-state) into
+--state-dir before invoking this script, and after the script returns
+commits + pushes both files with `git push --force-with-lease`. That gives
+us a real atomic CAS via git refs: concurrent runs that race on state
+deterministically lose the push and the workflow re-runs the script
+against the freshly fetched state.
+
+The dashboard issue body is rendered fresh each run; no state markers are
+embedded in it. On the first run after deploy `load_notification_state_file`
+falls back once to the legacy `<!-- notification-state: ... -->` body
+marker so the existing Slack ledger is migrated to the file.
 
 A run flows like this:
 
@@ -31,23 +42,22 @@ A run flows like this:
        single-PR + cache hit:  reuse cached results, recompute only the trigger PR
        otherwise:              rebuild all PRs in parallel
        v
-  fetch_dashboard_body                 (read previous notification state)
+  load_notification_state_file       (or legacy body marker on first run)
        v
   next_notification_state            (also performs Slack I/O)
        v
   fetch_dashboard_body                 (capture base_body for the write CAS)
        v
   reconcile_with_latest_dashboard
-       reconciles our calculation against the latest dashboard body, in case
-       another run wrote to it while we were computing
+       reload dashboard-state in case a concurrent run updated it
        v
-  render_dashboard_body                (local)
+  render_dashboard_body                (local; no state markers)
        v
-  write_dashboard_issue
-       refuses to write if the body changed under us. Slack I/O happens
-       before the CAS base_body fetch, so the merge/render/write tail is
-       entirely local and the CAS check should very rarely trip. If it
-       does, we drop our write and let the next run pick things up.
+  write_dashboard_issue                + save_dashboard_state_cache
+                                       + save_notification_state_file
+       refuses to write if the body changed under us. State files are then
+       committed and pushed by the workflow; if the push is rejected, the
+       workflow re-runs this script.
 
 Full (no --pr-number) runs always rebuild every PR and write unconditionally.
 Single-PR runs are optimistic-concurrency updates of just one PR slot in the
@@ -75,7 +85,7 @@ built up across stages, so not every field is present at every point.
   error                 str            Error detail, set only on failure paths.
 
 Only ``pr_number``, ``pr_url``, ``failed``, ``route``, and ``facts``
-survive into the cached dashboard-state JSON (see ``stored_result``).
+survive into the cached dashboard state (see ``stored_result``).
 
 ``facts`` (one per PR) — built in two stages:
 
@@ -156,6 +166,28 @@ LLM_THREAD_TIMEOUT_SECONDS = 180
 # classifications. The workflow restores/saves this directory via
 # actions/cache scoped to TRIGGER_PR_NUMBER.
 CLASSIFICATION_CACHE_DIR = Path(".cache/pr-classifications")
+# Directory holding state that must survive across runs:
+#   dashboard-state.json     cached per-PR routing results
+#   notification-state.json  per-PR Slack history
+# The workflow checks out an orphan branch (otelbot/pull-request-dashboard-state) into
+# this directory and commits + pushes the updated files with
+# --force-with-lease after the dashboard run, giving us a real atomic CAS
+# via git refs. Overridden at runtime with --state-dir.
+DEFAULT_STATE_DIR = Path("state")
+_state_dir: Path = DEFAULT_STATE_DIR
+
+
+def set_state_dir(path: Path) -> None:
+    global _state_dir
+    _state_dir = path
+
+
+def dashboard_state_path() -> Path:
+    return _state_dir / "dashboard-state.json"
+
+
+def notification_state_path() -> Path:
+    return _state_dir / "notification-state.json"
 # Per-thread, keep at most this many of the most recent comments when
 # building the LLM prompt (older comments are dropped, not truncated).
 THREAD_RECENT_COMMENTS_LIMIT = 20
@@ -183,7 +215,6 @@ NOTIFICATION_STATE_MARKER_RE = re.compile(r"<!--\s*notification-state:(.*?)\s*--
 # existing Slack notification history is preserved; new writes always use
 # `notification-state`.
 LEGACY_NOTIFICATION_STATE_MARKER_RE = re.compile(r"<!--\s*pr-review-dashboard-state:(.*?)\s*-->", re.S)
-DASHBOARD_STATE_MARKER_RE = re.compile(r"<!--\s*dashboard-state:(.*?)\s*-->", re.S)
 
 APPROVER_TEAM_SLUGS = [
     "semconv-genai-approvers",
@@ -839,11 +870,6 @@ def _state_marker(state: dict[str, Any], name: str) -> str:
     return f"<!-- {name}:{payload} -->"
 
 
-def _append_state(md: str, state: dict[str, Any], pattern: re.Pattern[str], name: str) -> str:
-    stripped = pattern.sub("", md).rstrip()
-    return f"{stripped}\n\n{_state_marker(state, name)}\n"
-
-
 def notification_state_from_body(body: str) -> dict[str, Any]:
     state = _state_from_body(body, NOTIFICATION_STATE_MARKER_RE)
     if state.get("_loaded_from_dashboard"):
@@ -857,19 +883,52 @@ def notification_state_marker(state: dict[str, Any]) -> str:
     return _state_marker(state, "notification-state")
 
 
-def append_notification_state(md: str, state: dict[str, Any]) -> str:
-    # Strip any legacy marker too so we don't leave a stale ledger behind
-    # after migrating to the new marker name.
-    md = LEGACY_NOTIFICATION_STATE_MARKER_RE.sub("", md)
-    return _append_state(md, state, NOTIFICATION_STATE_MARKER_RE, "notification-state")
+def _load_state_file(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return empty_state()
+    # A corrupt state file must not break the dashboard run. Log and start
+    # fresh; the next save replaces the bad file.
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        print(
+            f"warning: ignoring unreadable state file {path}: {e!r}",
+            file=sys.stderr,
+        )
+        return empty_state()
+    if not isinstance(data, dict):
+        return empty_state()
+    if not isinstance(data.get("prs"), dict):
+        data["prs"] = {}
+    data["version"] = 1
+    data["_loaded_from_dashboard"] = True
+    return data
 
 
-def dashboard_state_from_body(body: str) -> dict[str, Any]:
-    return _state_from_body(body, DASHBOARD_STATE_MARKER_RE)
+def _save_state_file(path: Path, state: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    stored = {k: v for k, v in state.items() if not k.startswith("_")}
+    stored.setdefault("version", 1)
+    stored.setdefault("prs", {})
+    path.write_text(
+        json.dumps(stored, sort_keys=True, indent=2), encoding="utf-8"
+    )
 
 
-def append_dashboard_state(md: str, state: dict[str, Any]) -> str:
-    return _append_state(md, state, DASHBOARD_STATE_MARKER_RE, "dashboard-state")
+def load_dashboard_state_cache() -> dict[str, Any]:
+    return _load_state_file(dashboard_state_path())
+
+
+def save_dashboard_state_cache(state: dict[str, Any]) -> None:
+    _save_state_file(dashboard_state_path(), state)
+
+
+def load_notification_state_file() -> dict[str, Any]:
+    return _load_state_file(notification_state_path())
+
+
+def save_notification_state_file(state: dict[str, Any]) -> None:
+    _save_state_file(notification_state_path(), state)
 
 
 def stored_result(result: dict[str, Any]) -> dict[str, Any]:
@@ -1848,8 +1907,7 @@ def compute_pr_results(
 ) -> DashboardCalculation:
     dashboard_state = empty_state()
     if pr_number:
-        _, cached_body = fetch_dashboard_body(repo, DEFAULT_DASHBOARD_TITLE, DEFAULT_DASHBOARD_LABEL)
-        dashboard_state = dashboard_state_from_body(cached_body)
+        dashboard_state = load_dashboard_state_cache()
 
     if pr_number and dashboard_state.get("_loaded_from_dashboard"):
         print(f"refreshing dashboard state for PR #{pr_number}", file=sys.stderr)
@@ -1913,13 +1971,14 @@ def compute_pr_results(
 def reconcile_with_latest_dashboard(
     calculation: DashboardCalculation,
     pr_number: int | None,
-    latest_body: str,
     open_pr_numbers: set[int],
 ) -> tuple[DashboardCalculation, bool]:
     if not pr_number or not calculation.used_cached_dashboard_state:
         return calculation, False
 
-    latest_dashboard_state = dashboard_state_from_body(latest_body)
+    # Reload the cache so we pick up any concurrent writer's update of
+    # other PR slots before we merge in our own.
+    latest_dashboard_state = load_dashboard_state_cache()
     previous_pr_result = (latest_dashboard_state.get("prs") or {}).get(str(pr_number))
     dashboard_state = calculation.dashboard_state
     results = calculation.results
@@ -1941,13 +2000,8 @@ def render_dashboard_body(
     prs: list[dict[str, Any]],
     results: dict[int, dict[str, Any]],
     repo: str,
-    dashboard_state: dict[str, Any],
-    notification_state: dict[str, Any],
 ) -> str:
-    md = render_pr_tables(prs, results, repo)
-    md = append_dashboard_state(md, dashboard_state)
-    md = append_notification_state(md, notification_state)
-    return md
+    return render_pr_tables(prs, results, repo)
 
 
 def main() -> int:
@@ -1960,7 +2014,14 @@ def main() -> int:
     ap.add_argument("--jobs", type=int, default=DEFAULT_JOBS, help=f"parallel workers (default: {DEFAULT_JOBS})")
     ap.add_argument("--model", default=DEFAULT_MODEL, help=f"copilot model (default: {DEFAULT_MODEL})")
     ap.add_argument("--pr-number", type=int, help="only refresh dashboard state for this PR")
+    ap.add_argument(
+        "--state-dir",
+        type=Path,
+        default=DEFAULT_STATE_DIR,
+        help=f"directory holding state files (default: {DEFAULT_STATE_DIR})",
+    )
     args = ap.parse_args()
+    set_state_dir(args.state_dir)
 
     repo = detect_repo()
     owner, repo_name = repo.split("/", 1)
@@ -1986,16 +2047,14 @@ def main() -> int:
         args.model,
     )
 
-    # Do Slack notifications first, before we capture base_body for the
-    # optimistic-concurrency check. Slack is the only I/O between the body
-    # fetch and the write, so doing it before the fetch keeps the CAS window
-    # purely local (merge / render / write). The previous notification state
-    # is read from a separate body fetch and doesn't have to match the body
-    # we later overwrite — a concurrent dashboard write between these two
-    # fetches at worst means we re-evaluate notifications against a slightly
-    # newer state on the next run.
-    initial_body = fetch_dashboard_body(repo, DEFAULT_DASHBOARD_TITLE, DEFAULT_DASHBOARD_LABEL)[1]
-    previous_state = notification_state_from_body(initial_body)
+    # Read the previous notification ledger from the state file. Fall
+    # back to the legacy body markers exactly once to migrate the existing
+    # ledger across the first run after deploy; once the state file is
+    # written the body fallback path is never taken again.
+    previous_state = load_notification_state_file()
+    if not previous_state.get("_loaded_from_dashboard"):
+        initial_body = fetch_dashboard_body(repo, DEFAULT_DASHBOARD_TITLE, DEFAULT_DASHBOARD_LABEL)[1]
+        previous_state = notification_state_from_body(initial_body)
     notification_numbers = {args.pr_number} if args.pr_number else None
     notification_state = next_notification_state(
         repo,
@@ -2012,7 +2071,6 @@ def main() -> int:
     calculation, dashboard_state_unchanged = reconcile_with_latest_dashboard(
         calculation,
         args.pr_number,
-        base_body,
         open_pr_numbers,
     )
 
@@ -2031,8 +2089,6 @@ def main() -> int:
         prs,
         calculation.results,
         repo,
-        calculation.dashboard_state,
-        notification_state,
     )
     if args.dry_run:
         output_path = Path(DRY_RUN_OUTPUT)
@@ -2047,6 +2103,12 @@ def main() -> int:
             dashboard_issue_number,
             base_body,
         )
+    # Persist the new state to the on-disk state files. The workflow
+    # commits + pushes these to the otelbot/pull-request-dashboard-state branch with
+    # --force-with-lease after this script returns. Saved after the issue
+    # write so we don't advertise state we failed to publish.
+    save_dashboard_state_cache(calculation.dashboard_state)
+    save_notification_state_file(notification_state)
     return 0
 
 

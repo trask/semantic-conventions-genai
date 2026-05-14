@@ -156,6 +156,29 @@ jobs:
           restore-keys: |
             pr-classifications-all-
 
+      - name: Checkout state branch
+        # Cross-PR-correct state lives on an orphan branch
+        # (otelbot/pull-request-dashboard-state) tracked in git. The branch has no
+        # shared history with main and never triggers other workflows.
+        # We check it out into ./state/ as a separate worktree so the
+        # main checkout of `main` is untouched. `git push --force-with-lease`
+        # later gives us a real atomic CAS via the git ref.
+        env:
+          STATE_BRANCH: otelbot/pull-request-dashboard-state
+        run: |
+          set -euo pipefail
+          git config user.email "otelbot@users.noreply.github.com"
+          git config user.name  "otelbot"
+          git fetch origin "$STATE_BRANCH" || true
+          if git show-ref --verify --quiet "refs/remotes/origin/$STATE_BRANCH"; then
+            git worktree add state -B "$STATE_BRANCH" "origin/$STATE_BRANCH"
+          else
+            # First run: bootstrap an empty orphan branch.
+            git worktree add --detach state HEAD
+            git -C state switch --orphan "$STATE_BRANCH"
+            git -C state rm -rf . 2>/dev/null || true
+          fi
+
       - name: Install Copilot CLI
         run: |
           npm ci --prefix .github/scripts/copilot-cli
@@ -171,12 +194,45 @@ jobs:
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           SLACK_USER_MAP_JSON: ${{ secrets.SLACK_USER_MAP_JSON }}
+          STATE_BRANCH: otelbot/pull-request-dashboard-state
         run: |
           set -euo pipefail
 
-          args=()
+          args=(--state-dir state)
           if [[ -n "${TRIGGER_PR_NUMBER:-}" ]]; then
             args+=(--pr-number "$TRIGGER_PR_NUMBER")
           fi
 
-          python3 .github/scripts/pull-request-dashboard.py "${args[@]}"
+          # Push state with --force-with-lease (real atomic CAS via the git
+          # ref). On rejection we re-fetch the latest state and re-run the
+          # dashboard so the merge happens against the fresh tip. Slack's
+          # 24h cadence gate (driven by notification-state.json) prevents
+          # duplicate pings across retries; the issue body PATCH is itself
+          # idempotent via base_body CAS.
+          max_attempts=5
+          for attempt in $(seq 1 "$max_attempts"); do
+            python3 .github/scripts/pull-request-dashboard.py "${args[@]}"
+
+            git -C state add -A
+            if git -C state diff --cached --quiet; then
+              echo "no state changes to push"
+              exit 0
+            fi
+            git -C state commit -m "Update dashboard state"
+
+            if git -C state \
+                -c "http.https://github.com/.extraheader=AUTHORIZATION: bearer ${OTELBOT_TOKEN}" \
+                push --force-with-lease origin "$STATE_BRANCH"; then
+              echo "state pushed on attempt $attempt"
+              exit 0
+            fi
+
+            if [[ "$attempt" -ge "$max_attempts" ]]; then
+              echo "CAS retry exhausted after $attempt attempt(s)" >&2
+              exit 1
+            fi
+
+            echo "push rejected (attempt $attempt); refetching and retrying" >&2
+            git -C state fetch origin "$STATE_BRANCH"
+            git -C state reset --hard "origin/$STATE_BRANCH"
+          done
