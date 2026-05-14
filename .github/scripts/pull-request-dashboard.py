@@ -2099,7 +2099,7 @@ def main() -> int:
         output_path.write_text(md, encoding="utf-8")
         print(f"wrote dry-run dashboard to {output_path.resolve()}", file=sys.stderr)
     else:
-        write_dashboard_issue(
+        published = write_dashboard_issue(
             repo,
             DEFAULT_DASHBOARD_TITLE,
             DEFAULT_DASHBOARD_LABEL,
@@ -2107,6 +2107,12 @@ def main() -> int:
             dashboard_issue_number,
             base_body,
         )
+        if not published:
+            # The issue body write lost the CAS to a concurrent writer.
+            # Skip saving our state to the orphan branch so we don't
+            # advertise a published view we never actually wrote; the
+            # workflow's retry loop will rebuild against the fresh body.
+            return 0
     # Persist the new state to the on-disk state files. The workflow
     # commits + pushes these to the otelbot/pull-request-dashboard-state branch with
     # --force-with-lease after this script returns. Saved after the issue
