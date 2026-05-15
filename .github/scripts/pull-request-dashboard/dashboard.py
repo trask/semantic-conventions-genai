@@ -44,8 +44,8 @@ A run flows like this:
 
 Slack notifications are sent by notify_slack.py in a separate serialized
 workflow job. That job loads the latest accepted dashboard state and
-notification ledger, sends any due notifications, and pushes the updated
-notification ledger with the same git CAS pattern.
+notification state, sends any due notifications, and pushes the updated
+notification state with the same git CAS pattern.
 
 State files are committed and pushed first. Only after that state branch push
 succeeds does a follow-up publishing job fetch the accepted rendered dashboard
