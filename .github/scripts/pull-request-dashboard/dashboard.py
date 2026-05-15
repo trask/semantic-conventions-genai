@@ -690,6 +690,7 @@ class DashboardCalculation:
     dashboard_state: dict[str, Any]
     trigger_pr_result: dict[str, Any] | None = None
     current_pr_result: dict[str, Any] | None = None
+    starting_pr_result: dict[str, Any] | None = None
     used_cached_dashboard_state: bool = False
 
 
@@ -711,6 +712,7 @@ def compute_pr_results(
     if pr_number and dashboard_state.get("_loaded_from_dashboard"):
         print(f"refreshing dashboard state for PR #{pr_number}", file=sys.stderr)
         results = results_from_dashboard_state(dashboard_state, open_pr_numbers)
+        starting_pr_result = results.get(pr_number)
         trigger_pr_result = build_pr_result(repo, owner, repo_name, {"number": pr_number}, reviewers, model)
         if trigger_pr_result is None:
             results.pop(pr_number, None)
@@ -722,6 +724,7 @@ def compute_pr_results(
             dashboard_state=dashboard_state,
             trigger_pr_result=trigger_pr_result,
             current_pr_result=current_pr_result,
+            starting_pr_result=starting_pr_result,
             used_cached_dashboard_state=True,
         )
 
@@ -798,6 +801,10 @@ def reconcile_with_latest_dashboard(
             dashboard_state = latest_dashboard_state
             results = results_from_dashboard_state(dashboard_state, open_pr_numbers)
         return replace(calculation, results=results, dashboard_state=dashboard_state), True
+
+    if latest_dashboard_state.get("_loaded_from_dashboard") and previous_pr_result != calculation.starting_pr_result:
+        results = results_from_dashboard_state(latest_dashboard_state, open_pr_numbers)
+        return replace(calculation, results=results, dashboard_state=latest_dashboard_state), True
 
     if latest_dashboard_state.get("_loaded_from_dashboard"):
         dashboard_state = latest_dashboard_state
