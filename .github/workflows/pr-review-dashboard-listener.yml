@@ -10,6 +10,11 @@ name: PR dashboard listener
 # rewrite anything in this file, including the upload step, so nothing
 # done here can be trusted by downstream consumers.
 #
+# GitHub also emits a pull_request_review_thread webhook when a review
+# conversation is resolved or unresolved, but that webhook is not exposed as
+# a GitHub Actions trigger. Those thread state changes are picked up by the
+# hourly full rebuild instead of this incremental listener.
+#
 # To minimise blast radius:
 #
 #   * top-level permissions are read-only and no secrets are referenced;
