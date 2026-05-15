@@ -71,7 +71,9 @@ built up across stages, so not every field is present at every point.
                                        ("maintainer", "approver", "author",
                                        "external", "transient-failure",
                                        "unknown").
-  facts                 dict           See below. Empty on failure.
+  facts                 dict           See below. Empty on data-fetch/build
+                                       failures; classification failures may
+                                       keep deterministic facts for rendering.
   threads               list[dict]     Unresolved discussion threads. Internal.
   classifications       list[dict]     Per-thread LLM decisions. Internal.
   error                 str            Error detail, set only on failure paths.
