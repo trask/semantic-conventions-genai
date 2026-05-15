@@ -255,7 +255,7 @@ def classify_threads(number: int, threads: list[dict[str, Any]], model: str) -> 
     for thread in threads:
         key = thread_cache_key(thread, model)
         cached = cache_in.get(key)
-        if cached:
+        if isinstance(cached, dict):
             record = dict(cached)
             record["thread_id"] = thread["thread_id"]
             record["thread_kind"] = thread["thread_kind"]
