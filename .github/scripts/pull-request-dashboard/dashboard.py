@@ -298,7 +298,7 @@ def normalize_events(raw: dict[str, Any], author: str, reviewers: set[str]) -> l
         login = actor_login(c.get("user") or {})
         events.append({
             "kind": "review-comment",
-            "timestamp": c.get("created_at") or "",
+            "timestamp": c.get("updated_at") or c.get("created_at") or "",
             "actor": login,
             "actor_role": role_for(login, author, reviewers),
             "body": c.get("body") or "",
