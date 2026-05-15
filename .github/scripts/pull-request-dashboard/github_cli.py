@@ -132,7 +132,7 @@ def gh_pr_checks(repo: str, number: int) -> list[dict[str, Any]] | None:
         )
         stdout = proc.stdout.strip()
         if proc.returncode == 8 and not stdout:
-            return []
+            return None
         if proc.returncode in (0, 1, 2, 8):
             if not stdout:
                 return None
