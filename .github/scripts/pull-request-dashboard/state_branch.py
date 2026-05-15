@@ -32,14 +32,26 @@ def remote_ref(state_branch: str) -> str:
     return f"refs/remotes/origin/{state_branch}"
 
 
+def is_missing_remote_ref(stderr: str) -> bool:
+    return "couldn't find remote ref" in stderr.lower()
+
+
 def fetch_state_branch(state_branch: str, required: bool) -> bool:
     refspec = f"{state_branch}:{remote_ref(state_branch)}"
-    proc = run(["git", "fetch", "origin", refspec], check=False)
+    proc = subprocess.run(
+        ["git", "fetch", "origin", refspec],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     if proc.returncode == 0:
         return True
+    if not required and is_missing_remote_ref(proc.stderr):
+        return False
+    message = proc.stderr.strip() or proc.stdout.strip() or f"exit code {proc.returncode}"
     if required:
-        raise RuntimeError(f"failed to fetch required state branch {state_branch}")
-    return False
+        raise RuntimeError(f"failed to fetch required state branch {state_branch}: {message}")
+    raise RuntimeError(f"failed to fetch optional state branch {state_branch}: {message}")
 
 
 def has_state_branch(state_branch: str) -> bool:
