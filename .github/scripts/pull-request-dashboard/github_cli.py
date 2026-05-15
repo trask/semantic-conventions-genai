@@ -209,6 +209,7 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
                             id
                             body
                             createdAt
+                            updatedAt
                             author {
                                 login
                             }
@@ -234,6 +235,7 @@ query($thread_id: ID!, $after: String) {
                     id
                     body
                     createdAt
+                    updatedAt
                     author {
                         login
                     }

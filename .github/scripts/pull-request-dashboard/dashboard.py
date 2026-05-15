@@ -426,7 +426,13 @@ def group_review_threads(
         comments = []
         for c in ((thread.get("comments") or {}).get("nodes") or []):
             actor = actor_login(c.get("author") or {})
-            comments.append(thread_comment(c.get("createdAt") or "", actor, author, reviewers, c.get("body") or ""))
+            comments.append(thread_comment(
+                c.get("updatedAt") or c.get("createdAt") or "",
+                actor,
+                author,
+                reviewers,
+                c.get("body") or "",
+            ))
         comments = [c for c in comments if c["timestamp"]]
         comments.sort(key=lambda c: c["timestamp"])
         if not comments:
