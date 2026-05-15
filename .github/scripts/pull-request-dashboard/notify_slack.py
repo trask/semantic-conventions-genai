@@ -29,7 +29,7 @@ def notify_slack_from_state(
     prior_notification_state: Path | None,
 ) -> list[str]:
     prs = list_open_prs(repo)
-    open_pr_numbers = {p["number"] for p in prs}
+    open_pr_numbers = {p["number"] for p in prs if not p.get("isDraft")}
     dashboard_state = load_dashboard_state_cache()
     results = results_from_dashboard_state(dashboard_state, open_pr_numbers)
 
