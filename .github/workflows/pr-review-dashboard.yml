@@ -106,7 +106,9 @@ jobs:
                 trigger_event="${rest%__*}"
                 trigger_action="${rest##*__}"
 
-                if [[ ! "$WORKFLOW_RUN_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+                if [[ -z "$trigger_event" || -z "$trigger_action" ]]; then
+                  skip_forwarded_event "bad trigger artifact name: $name; skipping stale forwarded event"
+                elif [[ ! "$WORKFLOW_RUN_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
                   skip_forwarded_event "bad head sha: $WORKFLOW_RUN_HEAD_SHA; skipping stale forwarded event"
                 else
                   mapfile -t matching_pr_numbers < <(gh api \
