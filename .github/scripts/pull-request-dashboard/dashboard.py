@@ -624,6 +624,19 @@ def build_pr_result(
         facts = compute_facts(raw, author, events)
         threads = group_discussion_threads(raw, events, author, reviewers, facts)
         classifications = classify_threads(number, threads, model)
+        failed_classifications = [c for c in classifications if c.get("failed")]
+        if failed_classifications:
+            return {
+                "pr_number": number,
+                "pr_title": raw["pr"].get("title") or "",
+                "pr_url": raw["pr"].get("url") or "",
+                "failed": True,
+                "facts": facts,
+                "threads": threads,
+                "classifications": classifications,
+                "route": "unknown",
+                "error": f"{len(failed_classifications)} thread classification(s) failed",
+            }
         route = route_pr(facts, classifications)
         add_wait_age_facts(facts, route, threads, classifications)
         return {
