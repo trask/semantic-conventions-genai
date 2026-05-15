@@ -70,6 +70,8 @@ def notify_slack(prior_notification_state: Path, notification_errors: Path) -> i
     errors = notify_slack_from_state(repo, prior_notification_state)
     if errors:
         notification_errors.write_text("\n".join(errors) + "\n", encoding="utf-8")
+    else:
+        notification_errors.unlink(missing_ok=True)
     return 0
 
 
