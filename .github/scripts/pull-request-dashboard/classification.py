@@ -155,7 +155,7 @@ def thread_prompt_input(thread: dict[str, Any]) -> dict[str, Any]:
     prompt_thread = {
         key: value
         for key, value in thread.items()
-        if key not in ("thread_facts", "comments")
+        if key != "comments"
     }
     prompt_thread["comments"] = [
         {
