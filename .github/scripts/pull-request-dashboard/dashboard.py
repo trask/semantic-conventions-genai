@@ -70,7 +70,7 @@ built up across stages, so not every field is present at every point.
   route                  str            Routing bucket: one of ROUTE_ORDER
                                        ("maintainer", "approver", "author",
                                        "external", "transient-failure",
-                                       "unknown") or "draft".
+                                       "unknown").
   facts                 dict           See below. Empty on failure.
   threads               list[dict]     Unresolved discussion threads. Internal.
   classifications       list[dict]     Per-thread LLM decisions. Internal.
