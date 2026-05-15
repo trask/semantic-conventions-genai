@@ -208,15 +208,16 @@ def run_llm_for_thread(thread: dict[str, Any], model: str) -> dict[str, Any]:
 
 
 def thread_cache_key(thread: dict[str, Any], model: str) -> str:
-    payload = json.dumps(
+    cache_key_json = json.dumps(
         {
             "model": model,
+            "prompt_template": THREAD_PROMPT_TEMPLATE,
             "thread": thread_prompt_input(thread),
         },
         sort_keys=True,
         separators=(",", ":"),
     )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return hashlib.sha256(cache_key_json.encode("utf-8")).hexdigest()
 
 
 def load_classification_cache(pr_number: int) -> dict[str, dict[str, Any]]:
