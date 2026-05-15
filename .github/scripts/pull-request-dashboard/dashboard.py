@@ -471,7 +471,7 @@ def group_pr_conversation(
     comments = []
     for c in raw["issue_comments"]:
         actor = actor_login(c.get("user") or {})
-        comment = thread_comment(c.get("created_at") or "", actor, author, reviewers, c.get("body") or "")
+        comment = thread_comment(c.get("updated_at") or c.get("created_at") or "", actor, author, reviewers, c.get("body") or "")
         if comment["timestamp"] and comment["actor_role"] != "bot" and comment["body"]:
             comments.append(comment)
     comments.sort(key=lambda c: c["timestamp"])
