@@ -783,7 +783,12 @@ def reconcile_with_latest_dashboard(
         # list_open_prs and the worker run. Drop any stale cached result so
         # the notification job cannot continue treating the PR as routed.
         dashboard_state = load_dashboard_state_cache()
-        if not dashboard_state.get("_loaded_from_dashboard"):
+        if dashboard_state.get("_loaded_from_dashboard"):
+            previous_pr_result = (dashboard_state.get("prs") or {}).get(str(pr_number))
+            if previous_pr_result != calculation.starting_pr_result:
+                results = results_from_dashboard_state(dashboard_state, open_pr_numbers)
+                return replace(calculation, results=results, dashboard_state=dashboard_state), True
+        else:
             dashboard_state = calculation.dashboard_state
         dashboard_state = update_dashboard_state_for_pr(dashboard_state, pr_number, None)
         results = results_from_dashboard_state(dashboard_state, open_pr_numbers)
