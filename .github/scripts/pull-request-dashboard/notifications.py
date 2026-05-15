@@ -1,3 +1,5 @@
+"""Slack notification cadence for the PR review dashboard."""
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -130,11 +132,13 @@ def send_slack_notification(
 def migrated_pr_notification_state(state: dict[str, Any]) -> dict[str, Any]:
     if state.get("last_notified_at") or not state.get("assignee_notifications"):
         return state
-    timestamps = [
-        a.get("last_notified_at")
-        for a in state["assignee_notifications"].values()
-        if isinstance(a, dict) and a.get("last_notified_at")
-    ]
+    timestamps: list[str] = []
+    for notification in state["assignee_notifications"].values():
+        if not isinstance(notification, dict):
+            continue
+        last_notified_at = notification.get("last_notified_at")
+        if isinstance(last_notified_at, str) and last_notified_at:
+            timestamps.append(last_notified_at)
     if not timestamps:
         return state
     return {
@@ -156,6 +160,7 @@ def next_notification_state(
     slack_user_map = load_slack_user_map()
 
     new_prs: dict[str, Any] = {}
+    notification_errors: list[str] = []
     for number, result in sorted(results.items()):
         pr_key = str(number)
         previous_pr_state = migrated_pr_notification_state(previous_prs.get(pr_key) or {})
@@ -199,10 +204,11 @@ def next_notification_state(
             error = send_slack_notification(repo, result, assignees, kind, webhook_url, assignee_mentions)
             if error:
                 print(f"  warning: {error}", file=sys.stderr)
+                notification_errors.append(error)
             else:
                 new_pr_state["last_notified_at"] = format_ts(now)
                 new_pr_state["last_notification_kind"] = kind
 
         if new_pr_state["last_notified_at"]:
             new_prs[pr_key] = new_pr_state
-    return {"version": 1, "prs": new_prs}
+    return {"version": 1, "prs": new_prs, "_notification_errors": notification_errors}

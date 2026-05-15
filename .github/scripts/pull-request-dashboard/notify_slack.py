@@ -27,7 +27,7 @@ from utils import utc_now
 def notify_slack_from_state(
     repo: str,
     prior_notification_state: Path | None,
-) -> None:
+) -> list[str]:
     prs = list_open_prs(repo)
     open_pr_numbers = {p["number"] for p in prs}
     dashboard_state = load_dashboard_state_cache()
@@ -45,36 +45,53 @@ def notify_slack_from_state(
         previous_state,
         utc_now(),
     )
+    notification_errors = [str(error) for error in notification_state.get("_notification_errors") or []]
     notification_state_changed = (notification_state.get("prs") or {}) != (
         state_file_notification_state.get("prs") or {}
     )
     if not notification_state_changed and state_file_notification_state.get("_loaded_from_dashboard"):
         print("notification state unchanged", file=sys.stderr)
-        return
+        return notification_errors
 
     save_notification_state_file(notification_state)
+    return notification_errors
 
 
 def prior_notification_state_path() -> Path:
     return Path(os.environ.get("RUNNER_TEMP", ".")) / "prior-notification-state.json"
 
 
-def notify_slack(prior_notification_state: Path) -> int:
+def notification_errors_path() -> Path:
+    return Path(os.environ.get("RUNNER_TEMP", ".")) / "notification-errors.txt"
+
+
+def notify_slack(prior_notification_state: Path, notification_errors: Path) -> int:
     repo = detect_repo()
-    notify_slack_from_state(repo, prior_notification_state)
+    errors = notify_slack_from_state(repo, prior_notification_state)
+    if errors:
+        notification_errors.write_text("\n".join(errors) + "\n", encoding="utf-8")
     return 0
 
 
 def notify_slack_with_state(args: argparse.Namespace, state_dir: Path) -> int:
     prior_notification_state = prior_notification_state_path()
-    return state_branch.push_state_changes(
+    notification_errors = notification_errors_path()
+    notification_errors.unlink(missing_ok=True)
+    status = state_branch.push_state_changes(
         state_dir,
         "Update dashboard notification state",
-        lambda: notify_slack(prior_notification_state),
+        lambda: notify_slack(prior_notification_state, notification_errors),
         state_branch=args.state_branch,
         add_paths=["notification-state.json"],
         retry_snapshots=[(notification_state_path(), prior_notification_state)],
     )
+    if status != 0:
+        return status
+    if not notification_errors.exists():
+        return 0
+    print("Slack notification delivery failed:", file=sys.stderr)
+    print(notification_errors.read_text(encoding="utf-8").rstrip(), file=sys.stderr)
+    return 1
 
 
 def main() -> int:
