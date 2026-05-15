@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from datetime import datetime
 from typing import Any
 
@@ -20,15 +19,6 @@ ROUTE_ORDER = ["maintainer", "approver", "author", "external", "transient-failur
 
 def _md_escape(s: str) -> str:
     return (s or "").replace("|", "\\|").replace("\n", " ").strip()
-
-
-def github_run_url(repo: str) -> str:
-    server_url = os.environ.get("GITHUB_SERVER_URL") or "https://github.com"
-    repository = os.environ.get("GITHUB_REPOSITORY") or repo
-    run_id = os.environ.get("GITHUB_RUN_ID") or ""
-    if run_id:
-        return f"{server_url}/{repository}/actions/runs/{run_id}"
-    return f"https://github.com/{repo}/actions/workflows/pr-review-dashboard.yml"
 
 
 def render_draft_pr_section(prs: list[dict[str, Any]]) -> list[str]:
