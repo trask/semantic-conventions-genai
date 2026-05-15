@@ -11,7 +11,8 @@ pushes with `git push --force-with-lease` so concurrent runs use git refs as
 the durable compare-and-swap boundary.
 
 Usage:
-    python .github/scripts/pull-request-dashboard/dashboard.py [--pr-number N]
+    python .github/scripts/pull-request-dashboard/dashboard.py --state-branch BRANCH
+                                                               [--pr-number N]
                                                                [--model NAME]
 
 Architecture overview
