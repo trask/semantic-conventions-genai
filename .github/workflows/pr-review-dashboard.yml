@@ -111,9 +111,13 @@ jobs:
                 elif [[ ! "$WORKFLOW_RUN_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
                   skip_forwarded_event "bad head sha: $WORKFLOW_RUN_HEAD_SHA; skipping stale forwarded event"
                 else
-                  mapfile -t matching_pr_numbers < <(gh api \
+                  matching_pr_numbers_text="$(gh api \
                     "repos/$GITHUB_REPOSITORY/commits/$WORKFLOW_RUN_HEAD_SHA/pulls" \
-                    --jq '.[] | select(.state == "open" and .head.sha == env.WORKFLOW_RUN_HEAD_SHA) | .number')
+                    --jq '.[] | select(.state == "open" and .head.sha == env.WORKFLOW_RUN_HEAD_SHA) | .number')"
+                  matching_pr_numbers=()
+                  if [[ -n "$matching_pr_numbers_text" ]]; then
+                    mapfile -t matching_pr_numbers <<< "$matching_pr_numbers_text"
+                  fi
                   if [[ "${#matching_pr_numbers[@]}" -eq 0 ]]; then
                     skip_forwarded_event "no open PR found for head_sha $WORKFLOW_RUN_HEAD_SHA; skipping stale forwarded event"
                   elif [[ "${#matching_pr_numbers[@]}" -gt 1 ]]; then
