@@ -164,6 +164,7 @@ jobs:
       actions: read
       checks: read
       contents: read
+      issues: read
       pull-requests: read
     environment: protected
     runs-on: ubuntu-latest
