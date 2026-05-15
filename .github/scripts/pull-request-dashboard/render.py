@@ -130,7 +130,10 @@ def render_pr_tables(prs: list[dict[str, Any]], results: dict[int, dict[str, Any
         if pr.get("isDraft"):
             continue
         res = results.get(pr["number"]) or {"route": "unknown"}
-        by_route.setdefault(res.get("route") or "unknown", []).append(pr)
+        route = res.get("route") or "unknown"
+        if route not in ROUTE_ORDER:
+            route = "unknown"
+        by_route.setdefault(route, []).append(pr)
 
     def row_sort_key(pr: dict[str, Any]) -> tuple[int, int]:
         res = results.get(pr["number"]) or {}
