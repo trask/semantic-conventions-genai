@@ -186,6 +186,8 @@ def next_notification_state(
             if a.lower() in slack_user_map
         ]
         if not mapped_assignees:
+            if previous_pr_state:
+                new_prs[pr_key] = previous_pr_state
             continue
 
         current_waiting_since = parse_ts(facts.get("waiting_since") or "")
