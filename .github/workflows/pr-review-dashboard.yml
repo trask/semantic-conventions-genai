@@ -76,6 +76,8 @@ jobs:
           skip_forwarded_event() {
             echo "$1" >&2
             skip_dashboard="true"
+            trigger_event=""
+            trigger_action=""
           }
 
           case "$EVENT_NAME" in
