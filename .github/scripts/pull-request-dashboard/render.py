@@ -18,7 +18,16 @@ ROUTE_ORDER = ["maintainer", "approver", "author", "external", "transient-failur
 
 
 def _md_escape(s: str) -> str:
-    return (s or "").replace("|", "\\|").replace("\n", " ").strip()
+    return (
+        (s or "")
+        .replace("\\", "\\\\")
+        .replace("|", "\\|")
+        .replace("[", "\\[")
+        .replace("]", "\\]")
+        .replace("@", "&#64;")
+        .replace("\n", " ")
+        .strip()
+    )
 
 
 def render_draft_pr_section(prs: list[dict[str, Any]]) -> list[str]:
