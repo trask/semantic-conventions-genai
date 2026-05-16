@@ -5,7 +5,7 @@
 
 | PR | Author | Assignees | CI | Conflicts | Age |
 |---|---|---|:---:|:---:|:---:|
-| [Test PR dashboard webhook bridge (#1)](https://github.com/trask/semantic-conventions-genai/pull/1) | trask |  | ❌ | ✅ | 4m |
+| [Test PR dashboard webhook bridge (#1)](https://github.com/trask/semantic-conventions-genai/pull/1) | trask |  | ❌ | ✅ | 3h |
 
 <details>
 <summary>Diagnostics</summary>
