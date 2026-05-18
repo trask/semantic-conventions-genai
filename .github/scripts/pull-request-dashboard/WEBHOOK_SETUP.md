@@ -5,6 +5,7 @@
 Create a Netlify project for this repository:
 
 - Repository: `open-telemetry/semantic-conventions-genai`
+- Project name: `otel-pull-request-dashboard`
 - Base directory: `.github/scripts/pull-request-dashboard`
 
 Save the Netlify project ID as a GitHub Actions variable named
@@ -15,9 +16,11 @@ Save a Netlify personal access token as a GitHub Actions secret named
 
 ## 2. GitHub App
 
-Create a GitHub App with the following webhook URL:
+Create a GitHub App:
 
-`https://<netlify-site-name>.netlify.app/.netlify/functions/github-webhook`
+- Name: `OpenTelemetry PR Dashboard`
+- Homepage URL: `https://opentelemetry.io`
+- Webhook URL: `https://otel-pull-request-dashboard.netlify.app/.netlify/functions/github-webhook`
 
 Generate and save a webhook secret:
 
@@ -27,8 +30,8 @@ openssl rand -hex 32
 
 Set repository permissions:
 
-- Pull requests: read-only
-- Issues: read-only
+- Pull requests: read-only (needed to subscribe to the events below)
+- Issues: read-only (needed to subscribe to the events below)
 - Actions: read and write
 
 Subscribe to events:
@@ -38,6 +41,10 @@ Subscribe to events:
 - Pull request review
 - Pull request review comment
 - Pull request review thread
+
+Create the app.
+
+Update the logo.
 
 Generate and download a private key for the GitHub App.
 
@@ -72,18 +79,6 @@ Non-secrets:
 - `GITHUB_WORKFLOW_ID` — `pull-request-dashboard.yml`
 - `GITHUB_WORKFLOW_REF` — `main`
 
-The GitHub App installation is the repository opt-in signal. The webhook only
-dispatches workflows for repositories owned by `GITHUB_OWNER`.
+Deploy contexts:
 
-## 5. Deploy
-
-Once the Netlify project ID variable and auth token secret are configured,
-run the `.github/workflows/deploy-pull-request-dashboard-webhook.yml` workflow.
-
-## 6. Smoke test
-
-In the GitHub App settings, navigate to **Advanced -> Recent deliveries**,
-select a ping delivery, and click **Redeliver**. Expect a 202 response.
-
-Then trigger a pull request event and confirm that the pull request dashboard workflow starts
-via `workflow_dispatch`.
+- Production
